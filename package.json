@@ -1,5 +1,5 @@
 {
-  "name": "@pwguler/pwgu-pengepul-provider",
+  "name": "@pwguler/pi-pengepul-provider",
   "version": "0.1.0",
   "type": "module",
   "description": "pi custom provider for pengepul, a local relay that pools your Claude/Codex subscriptions. Connects pi to http://127.0.0.1:8317 over the native Anthropic Messages and OpenAI Chat Completions wires.",
@@ -7,8 +7,7 @@
   "author": "pwguler",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pwguler/pi-packages",
-    "directory": "packages/pwgu-pengepul-provider"
+    "url": "https://github.com/pwguler/pi-pengepul-provider"
   },
   "main": "./src/index.ts",
   "files": [
@@ -20,7 +19,7 @@
     "pi",
     "pi-extension",
     "pi-package",
-    "pwgu-pengepul-provider",
+    "pi-pengepul-provider",
     "pengepul",
     "provider"
   ],

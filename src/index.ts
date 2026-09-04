@@ -1,5 +1,5 @@
 /**
- * @pwguler/pwgu-pengepul-provider entry point - the real edge adapter.
+ * @pwguler/pi-pengepul-provider entry point - the real edge adapter.
  *
  * Registers pengepul as a pi custom provider. pengepul is a local relay
  * (`http://127.0.0.1:8317`) that pools your Claude/Codex subscriptions and

@@ -1,4 +1,4 @@
-# @pwguler/pwgu-pengepul-provider
+# @pwguler/pi-pengepul-provider
 
 A custom provider for [pi](https://github.com/earendil-works/pi) that connects to
 [pengepul](https://github.com/pwguler/pengepul), a local relay that pools your
@@ -12,7 +12,7 @@ your relay serves.
 ## Install
 
 ```sh
-pi install npm:@pwguler/pwgu-pengepul-provider
+pi install npm:@pwguler/pi-pengepul-provider
 ```
 
 Start or reload pi, then select a model with `/model`. Pengepul models are

@@ -1,5 +1,5 @@
 /**
- * Live end-to-end test for @pwguler/pwgu-pengepul-provider.
+ * Live end-to-end test for @pwguler/pi-pengepul-provider.
  *
  * Run against a REAL pengepul relay (default http://127.0.0.1:8317):
  *
@@ -14,7 +14,7 @@
  *
  * Not part of `bun test` (it makes a real request); run explicitly:
  *
- *   bun packages/pwgu-pengepul-provider/scripts/e2e-live.ts
+ *   bun packages/pi-pengepul-provider/scripts/e2e-live.ts
  */
 
 import { streamSimple } from "@earendil-works/pi-ai/compat"

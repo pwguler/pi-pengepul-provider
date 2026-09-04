@@ -275,7 +275,7 @@ describe("loadPengepulModels", () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "pwgu-pengepul-"));
+    dir = mkdtempSync(join(tmpdir(), "pi-pengepul-"));
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });

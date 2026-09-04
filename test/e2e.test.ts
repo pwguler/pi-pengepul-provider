@@ -21,14 +21,14 @@ const MODELS_BODY = {
   ],
 };
 
-describe("pwgu-pengepul-provider end to end", () => {
+describe("pi-pengepul-provider end to end", () => {
   let server: Server;
   let baseUrl: string;
   let dir: string;
   const received: Record<string, string | undefined> = {};
 
   beforeEach(async () => {
-    dir = mkdtempSync(join(tmpdir(), "pwgu-pengepul-e2e-"));
+    dir = mkdtempSync(join(tmpdir(), "pi-pengepul-e2e-"));
 
     server = createServer((req, res) => {
       received["path"] = req.url;
