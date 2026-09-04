@@ -7,7 +7,7 @@
   "author": "pwguler",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pwguler/pi-pengepul-provider"
+    "url": "git+https://github.com/pwguler/pi-pengepul-provider.git"
   },
   "main": "./src/index.ts",
   "files": [
