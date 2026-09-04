@@ -11,12 +11,33 @@ your relay serves.
 
 ## Install
 
+From npm:
+
 ```sh
 pi install npm:@pwguler/pi-pengepul-provider
 ```
 
+Or straight from GitHub (no npm account needed):
+
+```sh
+pi install git:github.com/pwguler/pi-pengepul-provider
+```
+
+Pin a release so updates don't move under you:
+
+```sh
+pi install git:github.com/pwguler/pi-pengepul-provider@v0.1.0
+```
+
+To update a git-installed package later:
+
+```sh
+pi install git:github.com/pwguler/pi-pengepul-provider@v0.2.0
+```
+
 Start or reload pi, then select a model with `/model`. Pengepul models are
-prefixed `pengepul/<id>`.
+prefixed `pengepul/<id>`. To try it without installing, use
+`pi -e git:github.com/pwguler/pi-pengepul-provider`.
 
 ## What it does
 
