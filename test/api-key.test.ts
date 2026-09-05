@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { extractApiKeys, resolveApiKey, API_KEY_ENV } from "../src/api-key.ts";
+import { extractApiKeys, resolveApiKey, API_KEY_ENV } from "../extensions/api-key.ts";
 
 describe("extractApiKeys", () => {
   test("parses an inline flow sequence", () => {

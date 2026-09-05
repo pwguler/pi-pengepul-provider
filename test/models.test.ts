@@ -18,7 +18,7 @@ import {
   toProviderModelConfigs,
   type BuiltinModelLookup,
   type PengepulModel,
-} from "../src/models.ts";
+} from "../extensions/models.ts";
 
 const API_BODY = {
   object: "list",

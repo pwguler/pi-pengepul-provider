@@ -3,8 +3,8 @@ import { describe, expect, test } from "bun:test";
 import {
   createPengepulRuntime,
   type PengepulRuntimeApi,
-} from "../src/runtime.ts";
-import type { PengepulModel, PengepulModelSource } from "../src/models.ts";
+} from "../extensions/runtime.ts";
+import type { PengepulModel, PengepulModelSource } from "../extensions/models.ts";
 
 const MODEL: PengepulModel = {
   id: "claude-sonnet-4-6",

@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import loadExtension from "../src/index.ts";
+import loadExtension from "../extensions/index.ts";
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent";
 
 /**

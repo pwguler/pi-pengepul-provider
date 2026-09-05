@@ -9,9 +9,9 @@
     "type": "git",
     "url": "git+https://github.com/pwguler/pi-pengepul-provider.git"
   },
-  "main": "./src/index.ts",
+  "main": "./extensions/index.ts",
   "files": [
-    "src",
+    "extensions",
     "README.md",
     "LICENSE"
   ],
@@ -39,7 +39,7 @@
   },
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./extensions/index.ts"
     ]
   },
   "devDependencies": {

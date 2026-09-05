@@ -20,7 +20,7 @@
 import { streamSimple } from "@earendil-works/pi-ai/compat"
 import type { Context, Model } from "@earendil-works/pi-ai"
 
-import loadExtension from "../src/index.ts"
+import loadExtension from "../extensions/index.ts"
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
 
 const redactKey = (key: string | undefined) =>

@@ -5,7 +5,7 @@ import {
   dialectForModelId,
   modelsUrl,
   normalizeRootBaseUrl,
-} from "../src/dialect.ts";
+} from "../extensions/dialect.ts";
 
 describe("dialectForModelId", () => {
   test("routes claude-* to Anthropic Messages", () => {
