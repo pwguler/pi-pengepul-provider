@@ -217,6 +217,21 @@ describe("toProviderModelConfigs", () => {
     expect(gpt?.compat?.forceAdaptiveThinking).toBeUndefined();
   });
 
+  test("Anthropic models declare long cache retention; OpenAI models do not", () => {
+    // The 1h cache TTL is an Anthropic Messages feature. An
+    // openai-completions model carrying the flag would emit a ttl the
+    // Chat Completions wire has nowhere to put.
+    const models = modelsFromApiResponse(API_BODY);
+    const configs = toProviderModelConfigs(models, "http://127.0.0.1:8317");
+    const claude = configs.find((c) => c.id === "claude-sonnet-4-6");
+    const gpt = configs.find((c) => c.id === "gpt-5.4");
+
+    expect(claude?.compat?.supportsLongCacheRetention).toBe(true);
+    expect(gpt?.compat?.supportsLongCacheRetention).toBeUndefined();
+    // The flag rides alongside the existing one rather than replacing it.
+    expect(claude?.compat?.forceAdaptiveThinking).toBe(true);
+  });
+
   test("picker label strips the relay prefix; the id stays exact", () => {
     const models = modelsFromApiResponse(API_BODY);
     const configs = toProviderModelConfigs(models, "http://127.0.0.1:8317");
@@ -226,10 +241,20 @@ describe("toProviderModelConfigs", () => {
 });
 
 describe("modelsFromCache", () => {
+  test("rejects an envelope written before the compat shape changed", () => {
+    // v3 entries predate supportsLongCacheRetention. Replaying one would
+    // register Claude models without the flag and silently disable the 1h
+    // cache until the next successful fetch.
+    const models = modelsFromApiResponse(API_BODY);
+    expect(() =>
+      modelsFromCache({ version: 3, models: models.map((m) => ({ ...m })) }),
+    ).toThrow();
+  });
+
   test("round-trips through the cache envelope", () => {
     const models = modelsFromApiResponse(API_BODY);
     const cached = modelsFromCache({
-      version: 3,
+      version: 4,
       models: models.map((m) => ({ ...m })),
     });
     expect(cached).toHaveLength(3);
@@ -313,7 +338,7 @@ describe("loadPengepulModels", () => {
     };
     writeFileSync(
       cachePath,
-      JSON.stringify({ version: 3, models: [cached] }, null, 2) + "\n",
+      JSON.stringify({ version: 4, models: [cached] }, null, 2) + "\n",
       { mode: 0o600 },
     );
 

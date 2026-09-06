@@ -33,7 +33,7 @@ const DEFAULT_CONTEXT_WINDOW = 200_000
 const DEFAULT_MAX_TOKENS = 64_000
 const ZERO_COST: ModelCostRates = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 /** v2 cached pre-multi-catalog lookups (commandcode ids missed reasoning); reject it. */
-const MODEL_CACHE_VERSION = 3
+const MODEL_CACHE_VERSION = 4
 
 export type ModelInput = ("text" | "image")[]
 
@@ -269,10 +269,14 @@ export function toProviderModelConfigs(
   contextWindow: number
   maxTokens: number
   thinkingLevelMap?: Record<string, string | null>
-  compat?: { forceAdaptiveThinking?: boolean }
+  compat?: { forceAdaptiveThinking?: boolean; supportsLongCacheRetention?: boolean }
 }> {
   return models.map((model) => {
     const adaptive = model.dialect === "anthropic-messages" && model.reasoning
+    // The 1h cache TTL is a Messages-dialect feature: `cache_control.ttl`
+    // has nowhere to go on the Chat Completions wire. Reasoning is not part
+    // of it — a non-reasoning Claude model caches the same way.
+    const longCacheRetention = model.dialect === "anthropic-messages"
     return {
       id: model.id,
       name: model.name,
@@ -297,7 +301,14 @@ export function toProviderModelConfigs(
       // unsupported so pi omits the thinking param entirely (server default
       // = adaptive), and forceAdaptiveThinking routes an explicit level to
       // {type:"adaptive"} + effort instead of budget_tokens.
-      ...(adaptive ? { compat: { forceAdaptiveThinking: true as const } } : {}),
+      ...(adaptive || longCacheRetention
+        ? {
+            compat: {
+              ...(adaptive ? { forceAdaptiveThinking: true as const } : {}),
+              ...(longCacheRetention ? { supportsLongCacheRetention: true as const } : {}),
+            },
+          }
+        : {}),
     }
   })
 }
