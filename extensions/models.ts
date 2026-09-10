@@ -33,8 +33,8 @@ export const DEFAULT_MODELS_TIMEOUT_MS = 10_000
 const DEFAULT_CONTEXT_WINDOW = 200_000
 const DEFAULT_MAX_TOKENS = 64_000
 const ZERO_COST: ModelCostRates = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-/** v4 cached entries predate the relay's tri-state `reasoning` flag (reasoning models registered as non-reasoning); reject it. */
-const MODEL_CACHE_VERSION = 5
+/** v5 cached entries predate the relay-uniform off/minimal overlay (foreign catalog maps offered levels the relay 400s); reject it. */
+const MODEL_CACHE_VERSION = 6
 
 export type ModelInput = ("text" | "image")[]
 
@@ -75,7 +75,7 @@ export interface PengepulModel {
   cost: ModelCostRates
   contextWindow: number
   maxTokens: number
-  /** Level-to-wire mapping inherited from the catalog; undefined = pi's default. */
+  /** Level-to-wire mapping (inherited, relay-unsafe levels nulled); undefined = pi's default. */
   thinkingLevelMap?: Record<string, string | null>
 }
 
@@ -211,21 +211,24 @@ function toPengepulModel(
   const dialect = dialectForModelId(id)
   const meta = metaFor(entry, id, dialect, lookup)
   const ownedBy = entry["owned_by"]
-  const relayReasoning = optionalBoolean(entry["reasoning"])
 
   // A model the relay tags `anthropic` is Claude-family, hence reasoning-
   // capable, even when pi's catalog does not know its exact id yet.
   const reasoning = meta.reasoning || ownedBy === "anthropic"
 
-  // When the relay itself asserts reasoning on an openai-completions model,
-  // pi's default level set would offer `minimal` (the relay 400s on it) and
-  // `off` (its thinking toggle never actually disables thinking). Overlay
-  // nulls for both — never replace: inherited strings stay valid on the
-  // wire and inherited nulls keep their levels hidden. The Messages dialect
-  // needs no overlay: it folds `minimal` into `low` and already nulls `off`
-  // via forceAdaptiveThinking.
+  // The relay enforces reasoning_effort low|medium|high|xhigh|max at its
+  // request layer, uniformly across families: `minimal` 400s and its
+  // thinking toggle never actually disables thinking. That holds regardless
+  // of where the reasoning knowledge came from, so every openai-completions
+  // reasoning model gets off/minimal nulled — inherited catalogs were
+  // written for other upstreams and do offer the unsafe levels (observed:
+  // openrouter muse-spark `minimal: "minimal"`, opencode-go hy4-preview
+  // `off: "none"`). Overlay, never replace: inherited strings stay valid on
+  // the wire and inherited nulls keep their levels hidden. The Messages
+  // dialect needs no overlay: it folds `minimal` into `low` and already
+  // nulls `off` via forceAdaptiveThinking.
   let thinkingLevelMap = meta.thinkingLevelMap ? { ...meta.thinkingLevelMap } : undefined
-  if (relayReasoning === true && dialect === "openai-completions") {
+  if (reasoning && dialect === "openai-completions") {
     thinkingLevelMap = { ...(thinkingLevelMap ?? {}), off: null, minimal: null }
   }
 

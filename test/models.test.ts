@@ -170,9 +170,12 @@ describe("modelsFromApiResponse", () => {
     expect(models[0]?.reasoning).toBe(true);
   });
 
-  test("relay silence keeps the catalog's reasoning and level map", () => {
+  test("relay silence keeps the catalog's reasoning and inherited map strings", () => {
     // The 18 relay entries without a `reasoning` key are catalog fallback,
-    // not refutations: nothing is promoted and nothing is overlaid.
+    // not refutations: nothing is promoted and nothing is demoted. The map
+    // survives intact except off/minimal, nulled because the relay enforces
+    // its effort enum at the request layer no matter where reasoning came
+    // from.
     const body = {
       object: "list",
       data: [
@@ -187,14 +190,15 @@ describe("modelsFromApiResponse", () => {
             maxTokens: 384_000,
             input: ["text"],
             cost: { input: 0.27, output: 1.1, cacheRead: 0.027, cacheWrite: 0 },
-            thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+            thinkingLevelMap: { low: null, medium: null, high: "high", max: "max" },
           }
         : undefined;
 
     const models = modelsFromApiResponse(body, lookup);
     expect(models[0]?.reasoning).toBe(true);
-    // No relay assertion -> no off/minimal overlay; the map passes through.
+    // Overlay, never replace: inherited strings and nulls survive.
     expect(models[0]?.thinkingLevelMap).toEqual({
+      off: null,
       minimal: null,
       low: null,
       medium: null,
@@ -282,6 +286,41 @@ describe("modelsFromApiResponse", () => {
     const models = modelsFromApiResponse(body, () => undefined);
     expect(models[0]?.dialect).toBe("anthropic-messages");
     expect(models[0]?.thinkingLevelMap).toBeUndefined();
+  });
+
+  test("a catalog map offering the relay's rejected levels is overlaid", () => {
+    // Foreign catalogs were written for other upstreams: openrouter's
+    // muse-spark maps minimal:"minimal" and opencode-go's hy4-preview maps
+    // off:"none". The relay 400s on both efforts, so the overlay must null
+    // them even when it did not assert reasoning itself.
+    const body = {
+      object: "list",
+      data: [
+        { id: "commandcode/tencent/hy4-preview", object: "model", owned_by: "commandcode" },
+      ],
+    };
+    const lookup: BuiltinModelLookup = (id) =>
+      id.slice(id.lastIndexOf("/") + 1) === "hy4-preview"
+        ? {
+            reasoning: true,
+            contextWindow: 262_144,
+            maxTokens: 65_536,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            thinkingLevelMap: { off: "none", minimal: null, low: null, medium: null, high: "high", xhigh: null, max: null },
+          }
+        : undefined;
+
+    const models = modelsFromApiResponse(body, lookup);
+    expect(models[0]?.thinkingLevelMap).toEqual({
+      off: null,
+      minimal: null,
+      low: null,
+      medium: null,
+      high: "high",
+      xhigh: null,
+      max: null,
+    });
   });
 
   test("REGRESSION: commandcode ids inherit reasoning from another catalog", () => {
@@ -395,10 +434,20 @@ describe("modelsFromCache", () => {
     ).toThrow();
   });
 
+  test("rejects an envelope written before the relay-uniform level overlay", () => {
+    // v5 entries predate nulling off/minimal on every openai-completions
+    // reasoning model. Replaying one would keep offering catalog levels the
+    // relay rejects (minimal, off:"none") until the next successful fetch.
+    const models = modelsFromApiResponse(API_BODY);
+    expect(() =>
+      modelsFromCache({ version: 5, models: models.map((m) => ({ ...m })) }),
+    ).toThrow();
+  });
+
   test("round-trips through the cache envelope", () => {
     const models = modelsFromApiResponse(API_BODY);
     const cached = modelsFromCache({
-      version: 5,
+      version: 6,
       models: models.map((m) => ({ ...m })),
     });
     expect(cached).toHaveLength(3);
@@ -482,7 +531,7 @@ describe("loadPengepulModels", () => {
     };
     writeFileSync(
       cachePath,
-      JSON.stringify({ version: 5, models: [cached] }, null, 2) + "\n",
+      JSON.stringify({ version: 6, models: [cached] }, null, 2) + "\n",
       { mode: 0o600 },
     );
 
