@@ -150,6 +150,140 @@ describe("modelsFromApiResponse", () => {
     });
   });
 
+  test("relay's reasoning flag wins over the catalog fallback", () => {
+    // The relay tri-state `reasoning` is first-party truth for whether the
+    // upstream accepts reasoning params. deepseek-v4.1-flash matches no pi
+    // catalog and no family heuristic, so without this flag the model
+    // registered as non-reasoning and pi hid the thinking picker entirely.
+    const body = {
+      object: "list",
+      data: [
+        {
+          id: "commandcode/deepseek/deepseek-v4.1-flash",
+          object: "model",
+          owned_by: "commandcode",
+          reasoning: true,
+        },
+      ],
+    };
+    const models = modelsFromApiResponse(body, () => undefined);
+    expect(models[0]?.reasoning).toBe(true);
+  });
+
+  test("relay silence keeps the catalog's reasoning and level map", () => {
+    // The 18 relay entries without a `reasoning` key are catalog fallback,
+    // not refutations: nothing is promoted and nothing is overlaid.
+    const body = {
+      object: "list",
+      data: [
+        { id: "commandcode/deepseek/deepseek-v4-pro", object: "model", owned_by: "commandcode" },
+      ],
+    };
+    const lookup: BuiltinModelLookup = (id) =>
+      id.slice(id.lastIndexOf("/") + 1) === "deepseek-v4-pro"
+        ? {
+            reasoning: true,
+            contextWindow: 1_000_000,
+            maxTokens: 384_000,
+            input: ["text"],
+            cost: { input: 0.27, output: 1.1, cacheRead: 0.027, cacheWrite: 0 },
+            thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+          }
+        : undefined;
+
+    const models = modelsFromApiResponse(body, lookup);
+    expect(models[0]?.reasoning).toBe(true);
+    // No relay assertion -> no off/minimal overlay; the map passes through.
+    expect(models[0]?.thinkingLevelMap).toEqual({
+      minimal: null,
+      low: null,
+      medium: null,
+      high: "high",
+      max: "max",
+    });
+  });
+
+  test("a non-boolean relay reasoning value does not promote", () => {
+    // The relay's rollout sends the flag as a boolean or omits it; anything
+    // else is garbage and must fall back to the catalog, not throw.
+    const body = {
+      object: "list",
+      data: [
+        {
+          id: "commandcode/deepseek/deepseek-v4.1-flash",
+          object: "model",
+          owned_by: "commandcode",
+          reasoning: "true",
+        },
+      ],
+    };
+    const models = modelsFromApiResponse(body, () => undefined);
+    expect(models[0]?.reasoning).toBe(false);
+    expect(models[0]?.thinkingLevelMap).toBeUndefined();
+  });
+
+  test("relay-reasoning openai-completions models hide off and minimal", () => {
+    // The relay's reasoning_effort enum is low|medium|high|xhigh|max: it 400s
+    // on `minimal`, and its thinking toggle never actually disables thinking,
+    // so neither level may reach the Chat Completions wire. Overlaying nulls
+    // (not replacing) keeps inherited strings and inherited nulls intact; a
+    // missing map leaves low/medium/high, all accepted by the relay.
+    const body = {
+      object: "list",
+      data: [
+        {
+          id: "commandcode/deepseek/deepseek-v4.1-flash",
+          object: "model",
+          owned_by: "commandcode",
+          reasoning: true,
+        },
+      ],
+    };
+
+    const bare = modelsFromApiResponse(body, () => undefined);
+    expect(bare[0]?.thinkingLevelMap).toEqual({ off: null, minimal: null });
+
+    const lookup: BuiltinModelLookup = (id) =>
+      id.slice(id.lastIndexOf("/") + 1) === "deepseek-v4.1-flash"
+        ? {
+            reasoning: true,
+            contextWindow: 1_000_000,
+            maxTokens: 384_000,
+            input: ["text"],
+            cost: { input: 0.27, output: 1.1, cacheRead: 0.027, cacheWrite: 0 },
+            thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+          }
+        : undefined;
+    const inherited = modelsFromApiResponse(body, lookup);
+    expect(inherited[0]?.thinkingLevelMap).toEqual({
+      off: null,
+      minimal: null,
+      low: null,
+      medium: null,
+      high: "high",
+      max: "max",
+    });
+  });
+
+  test("relay reasoning does not overlay the anthropic adaptive path", () => {
+    // The Messages dialect folds `minimal` into `low` and nulls `off` via
+    // forceAdaptiveThinking; the overlay is openai-completions only.
+    const body = {
+      object: "list",
+      data: [
+        {
+          id: "anthropic/claude-brand-new-9",
+          object: "model",
+          owned_by: "anthropic",
+          reasoning: true,
+        },
+      ],
+    };
+    const models = modelsFromApiResponse(body, () => undefined);
+    expect(models[0]?.dialect).toBe("anthropic-messages");
+    expect(models[0]?.thinkingLevelMap).toBeUndefined();
+  });
+
   test("REGRESSION: commandcode ids inherit reasoning from another catalog", () => {
     // pi searched only the `openai` catalog for openai-completions ids, so
     // `commandcode/deepseek/deepseek-v4-pro` missed (it lives under `deepseek`),
@@ -251,10 +385,20 @@ describe("modelsFromCache", () => {
     ).toThrow();
   });
 
+  test("rejects an envelope written before the relay reasoning flag was read", () => {
+    // v4 entries predate reading the relay's tri-state `reasoning` flag.
+    // Replaying one would keep registering relay-reasoning models as
+    // non-reasoning (no thinking picker) until the next successful fetch.
+    const models = modelsFromApiResponse(API_BODY);
+    expect(() =>
+      modelsFromCache({ version: 4, models: models.map((m) => ({ ...m })) }),
+    ).toThrow();
+  });
+
   test("round-trips through the cache envelope", () => {
     const models = modelsFromApiResponse(API_BODY);
     const cached = modelsFromCache({
-      version: 4,
+      version: 5,
       models: models.map((m) => ({ ...m })),
     });
     expect(cached).toHaveLength(3);
@@ -338,7 +482,7 @@ describe("loadPengepulModels", () => {
     };
     writeFileSync(
       cachePath,
-      JSON.stringify({ version: 4, models: [cached] }, null, 2) + "\n",
+      JSON.stringify({ version: 5, models: [cached] }, null, 2) + "\n",
       { mode: 0o600 },
     );
 

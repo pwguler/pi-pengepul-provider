@@ -9,8 +9,9 @@
  *
  * The relay advertises id/owned_by and, since pengepul 0.6.0, optional
  * per-model metadata: `context_window`, `max_output_tokens`,
- * `input_modalities`, and `pricing`. That is the first-party truth for what
- * this relay actually serves, so it wins. The rollout is partial (some ids
+ * `input_modalities`, `pricing`, and `reasoning`. That is the first-party
+ * truth for what this relay actually serves, so it wins. The rollout is
+ * partial (some ids
  * still come back with ids only), so two fallbacks remain: pi's builtin
  * catalog - pengepul forwards the same ids upstream, so pi's numbers are the
  * next best source - and then family heuristics. The catalog lookup is
@@ -32,8 +33,8 @@ export const DEFAULT_MODELS_TIMEOUT_MS = 10_000
 const DEFAULT_CONTEXT_WINDOW = 200_000
 const DEFAULT_MAX_TOKENS = 64_000
 const ZERO_COST: ModelCostRates = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-/** v2 cached pre-multi-catalog lookups (commandcode ids missed reasoning); reject it. */
-const MODEL_CACHE_VERSION = 4
+/** v4 cached entries predate the relay's tri-state `reasoning` flag (reasoning models registered as non-reasoning); reject it. */
+const MODEL_CACHE_VERSION = 5
 
 export type ModelInput = ("text" | "image")[]
 
@@ -117,6 +118,8 @@ function heuristicMeta(id: string): BuiltinModelMeta {
 /**
  * Metadata pengepul itself advertises for a model (pengepul >= 0.6.0).
  * Every field is optional: the rollout is partial and older relays send none.
+ * `reasoning` is the relay's first-party say on whether the upstream accepts
+ * reasoning params; absent or non-boolean falls back to the catalog.
  * Returns undefined when the entry carries no usable metadata at all.
  */
 export function metaFromRelayEntry(
@@ -126,16 +129,19 @@ export function metaFromRelayEntry(
   const maxTokens = optionalPositiveNumber(entry["max_output_tokens"])
   const input = optionalInputModalities(entry["input_modalities"])
   const cost = optionalPricing(entry["pricing"])
+  const reasoning = optionalBoolean(entry["reasoning"])
 
   if (
     contextWindow === undefined &&
     maxTokens === undefined &&
     input === undefined &&
-    cost === undefined
+    cost === undefined &&
+    reasoning === undefined
   ) {
     return undefined
   }
   return {
+    ...(reasoning !== undefined ? { reasoning } : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     ...(input !== undefined ? { input } : {}),
@@ -145,6 +151,10 @@ export function metaFromRelayEntry(
 
 function optionalPositiveNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined
 }
 
 function optionalInputModalities(value: unknown): ModelInput | undefined {
@@ -201,10 +211,23 @@ function toPengepulModel(
   const dialect = dialectForModelId(id)
   const meta = metaFor(entry, id, dialect, lookup)
   const ownedBy = entry["owned_by"]
+  const relayReasoning = optionalBoolean(entry["reasoning"])
 
   // A model the relay tags `anthropic` is Claude-family, hence reasoning-
   // capable, even when pi's catalog does not know its exact id yet.
   const reasoning = meta.reasoning || ownedBy === "anthropic"
+
+  // When the relay itself asserts reasoning on an openai-completions model,
+  // pi's default level set would offer `minimal` (the relay 400s on it) and
+  // `off` (its thinking toggle never actually disables thinking). Overlay
+  // nulls for both — never replace: inherited strings stay valid on the
+  // wire and inherited nulls keep their levels hidden. The Messages dialect
+  // needs no overlay: it folds `minimal` into `low` and already nulls `off`
+  // via forceAdaptiveThinking.
+  let thinkingLevelMap = meta.thinkingLevelMap ? { ...meta.thinkingLevelMap } : undefined
+  if (relayReasoning === true && dialect === "openai-completions") {
+    thinkingLevelMap = { ...(thinkingLevelMap ?? {}), off: null, minimal: null }
+  }
 
   return {
     id,
@@ -215,7 +238,7 @@ function toPengepulModel(
     cost: { ...meta.cost },
     contextWindow: meta.contextWindow,
     maxTokens: meta.maxTokens,
-    ...(meta.thinkingLevelMap ? { thinkingLevelMap: { ...meta.thinkingLevelMap } } : {}),
+    ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
   }
 }
 
