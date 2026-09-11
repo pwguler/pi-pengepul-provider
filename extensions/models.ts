@@ -92,19 +92,44 @@ export function bareId(id: string): string {
   return slash === -1 ? id : id.slice(slash + 1)
 }
 
+/** `openrouter/openai/gpt-5.4:batch` -> `gpt-5.4:batch`: the model name without every routing prefix. */
+export function modelName(id: string): string {
+  const slash = id.lastIndexOf("/")
+  return slash === -1 ? id : id.slice(slash + 1)
+}
+
 /**
  * Fallback for models pi's catalog does not know. Family-shaped but
- * conservative; the builtin lookup wins whenever it has the id. The final
- * branch treats unknown ids as non-reasoning, so an unrecognized id never
- * gets reasoning params the upstream may reject.
+ * conservative; the builtin lookup wins whenever it has the id. The relay
+ * prefixes ids with routing namespaces (`openrouter/openai/gpt-5.4:batch`),
+ * so the family is read from the final segment. The final branch treats
+ * unknown ids as non-reasoning, so an unrecognized id never gets reasoning
+ * params the upstream may reject.
  */
 function heuristicMeta(id: string): BuiltinModelMeta {
-  const lower = bareId(id).toLowerCase()
-  if (lower.startsWith("claude-")) {
+  const name = modelName(id).toLowerCase()
+  if (name.startsWith("claude-")) {
     return { reasoning: true, contextWindow: 200_000, maxTokens: 64_000, input: ["text"], cost: ZERO_COST }
   }
-  if (lower.startsWith("gpt-") || lower.startsWith("codex-") || /^o[1-9]/.test(lower)) {
+  if (
+    name.startsWith("codex-") ||
+    /^gpt-[5-9]/.test(name) ||
+    name.startsWith("gpt-oss") ||
+    /^o[1-9]/.test(name)
+  ) {
     return { reasoning: true, contextWindow: 272_000, maxTokens: 64_000, input: ["text"], cost: ZERO_COST }
+  }
+  // Families that name their reasoning: DeepSeek's R1 line and ids that spell
+  // it out (`sonar-reasoning-pro`). The relay's own numbers win when it sends
+  // them; these are placeholders for the ids it describes with nothing else.
+  if (name.startsWith("deepseek-r1") || name.includes("reasoning")) {
+    return {
+      reasoning: true,
+      contextWindow: DEFAULT_CONTEXT_WINDOW,
+      maxTokens: DEFAULT_MAX_TOKENS,
+      input: ["text"],
+      cost: ZERO_COST,
+    }
   }
   return {
     reasoning: false,
@@ -217,20 +242,19 @@ function toPengepulModel(
   const reasoning = meta.reasoning || ownedBy === "anthropic"
 
   // The relay enforces reasoning_effort low|medium|high|xhigh|max at its
-  // request layer, uniformly across families: `minimal` 400s and its
-  // thinking toggle never actually disables thinking. That holds regardless
-  // of where the reasoning knowledge came from, so every openai-completions
-  // reasoning model gets off/minimal nulled — inherited catalogs were
-  // written for other upstreams and do offer the unsafe levels (observed:
-  // openrouter muse-spark `minimal: "minimal"`, opencode-go hy4-preview
-  // `off: "none"`). Overlay, never replace: inherited strings stay valid on
-  // the wire and inherited nulls keep their levels hidden. The Messages
-  // dialect needs no overlay: it folds `minimal` into `low` and already
-  // nulls `off` via forceAdaptiveThinking.
-  let thinkingLevelMap = meta.thinkingLevelMap ? { ...meta.thinkingLevelMap } : undefined
-  if (reasoning && dialect === "openai-completions") {
-    thinkingLevelMap = { ...(thinkingLevelMap ?? {}), off: null, minimal: null }
-  }
+  // request layer, uniformly across families: `minimal` 400s and its thinking
+  // toggle never actually disables thinking. That holds no matter where the
+  // reasoning knowledge came from, so every openai-completions reasoning model
+  // gets the relay's shape: inherited strings case-folded to the enum (pi's
+  // catalogs spell Google efforts `HIGH` and Qwen's `default`), values that
+  // match under no casing hidden, and off/minimal always null. Overlay, never
+  // replace: inherited nulls keep their levels hidden. The Messages dialect
+  // needs none of this: it folds `minimal` into `low` and already nulls `off`
+  // via forceAdaptiveThinking.
+  const thinkingLevelMap = relaySafeLevelMap(
+    meta.thinkingLevelMap,
+    reasoning && dialect === "openai-completions",
+  )
 
   return {
     id,
@@ -243,6 +267,37 @@ function toPengepulModel(
     maxTokens: meta.maxTokens,
     ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
   }
+}
+
+/** The efforts the relay accepts; anything else is rejected at its request layer. */
+const RELAY_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"])
+
+/**
+ * Shape an inherited level map for the relay's wire. With `enforce` (an
+ * openai-completions reasoning model) the relay's enum is the only vocabulary
+ * that reaches it: inherited strings are case-folded to the enum or hidden,
+ * and off/minimal are always hidden. Without it the map passes through.
+ */
+function relaySafeLevelMap(
+  inherited: Record<string, string | null> | undefined,
+  enforce: boolean,
+): Record<string, string | null> | undefined {
+  if (!enforce) return inherited ? { ...inherited } : undefined
+
+  const map: Record<string, string | null> = {}
+  for (const [level, mapped] of Object.entries(inherited ?? {})) {
+    map[level] = typeof mapped === "string" ? relayEffort(mapped) : mapped
+  }
+  map["off"] = null
+  map["minimal"] = null
+  return map
+}
+
+/** The relay's effort enum, case-folded; null keeps the level out of the picker. */
+function relayEffort(value: string): string | null {
+  if (RELAY_EFFORTS.has(value)) return value
+  const lower = value.toLowerCase()
+  return RELAY_EFFORTS.has(lower) ? lower : null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

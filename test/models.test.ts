@@ -17,6 +17,7 @@ import {
   modelsFromCache,
   toProviderModelConfigs,
   type BuiltinModelLookup,
+  type BuiltinModelMeta,
   type PengepulModel,
 } from "../extensions/models.ts";
 
@@ -321,6 +322,89 @@ describe("modelsFromApiResponse", () => {
       xhigh: null,
       max: null,
     });
+  });
+
+  test("inherited level strings are normalized to the relay's enum", () => {
+    // pi's openrouter catalog spells Google efforts in caps and Qwen's as
+    // "default". The relay takes only lowercase low|medium|high|xhigh|max,
+    // so a foreign value is case-folded when it matches and hidden when it
+    // matches under no casing.
+    const body = {
+      object: "list",
+      data: [
+        {
+          id: "openrouter/google/gemini-3.1-pro-preview",
+          object: "model",
+          owned_by: "openrouter",
+          reasoning: true,
+        },
+        { id: "openrouter/qwen/qwen3.6-27b", object: "model", owned_by: "openrouter", reasoning: true },
+      ],
+    };
+    const lookup: BuiltinModelLookup = (id): BuiltinModelMeta | undefined =>
+      id === "openrouter/google/gemini-3.1-pro-preview"
+        ? {
+            reasoning: true,
+            contextWindow: 1_048_576,
+            maxTokens: 65_536,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            thinkingLevelMap: { low: "LOW", high: "HIGH" },
+          }
+        : {
+            reasoning: true,
+            contextWindow: 262_144,
+            maxTokens: 65_536,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            thinkingLevelMap: { high: "default" },
+          };
+
+    const models = modelsFromApiResponse(body, lookup);
+    expect(models[0]?.thinkingLevelMap).toEqual({ off: null, minimal: null, low: "low", high: "high" });
+    // "default" is not a relay effort under any casing: keep the level hidden.
+    expect(models[1]?.thinkingLevelMap).toEqual({ off: null, minimal: null, high: null });
+  });
+
+  test("family heuristics see through every relay routing prefix", () => {
+    // The relay prefixes ids with its upstream namespace. The family has to be
+    // read from the final segment, and the OpenAI branch stays on the reasoning
+    // families: gpt-4o is not one, however it is spelled.
+    const body = {
+      object: "list",
+      data: [
+        { id: "openrouter/openai/gpt-5-image-mini", object: "model", owned_by: "openrouter" },
+        { id: "openrouter/openai/gpt-oss-20b:batch", object: "model", owned_by: "openrouter" },
+        { id: "openrouter/openai/gpt-4o:batch", object: "model", owned_by: "openrouter" },
+        { id: "openrouter/openai/gpt-3.5-turbo", object: "model", owned_by: "openrouter" },
+      ],
+    };
+    const models = modelsFromApiResponse(body, () => undefined);
+    expect(models[0]?.reasoning).toBe(true);
+    expect(models[1]?.reasoning).toBe(true);
+    expect(models[2]?.reasoning).toBe(false);
+    expect(models[3]?.reasoning).toBe(false);
+  });
+
+  test("name-based reasoning families resolve without a catalog entry", () => {
+    const body = {
+      object: "list",
+      data: [
+        {
+          id: "openrouter/deepseek/deepseek-r1-distill-llama-70b",
+          object: "model",
+          owned_by: "openrouter",
+        },
+        { id: "openrouter/perplexity/sonar-reasoning-pro", object: "model", owned_by: "openrouter" },
+        { id: "openrouter/tencent/hy-mt2-7b", object: "model", owned_by: "openrouter" },
+      ],
+    };
+    const models = modelsFromApiResponse(body, () => undefined);
+    expect(models[0]?.reasoning).toBe(true);
+    expect(models[1]?.reasoning).toBe(true);
+    expect(models[2]?.reasoning).toBe(false);
+    // Relay metadata still wins over the heuristic's placeholder numbers.
+    expect(models[0]?.contextWindow).toBe(200_000);
   });
 
   test("REGRESSION: commandcode ids inherit reasoning from another catalog", () => {
