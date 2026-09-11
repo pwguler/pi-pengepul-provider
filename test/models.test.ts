@@ -489,6 +489,27 @@ describe("toProviderModelConfigs", () => {
     expect(claude?.compat?.forceAdaptiveThinking).toBe(true);
   });
 
+  test("every model sends the relay's session affinity header", () => {
+    // The relay's conversation_key resolves `x-claude-code-session-id`, then
+    // `x-session-id`, then the body's `prompt_cache_key`, then a hash of the
+    // cacheable prefix, on both routes. pi emits one of those headers only for
+    // the `openrouter` affinity format, and only when the send flag is set.
+    // Both auto-detected defaults are wrong here: openai-completions picks
+    // `openai` (session_id + x-client-request-id + x-session-affinity) and
+    // anthropic-messages picks nothing at all. The pin puts the conversation
+    // on the relay's first rule rather than its third, on both dialects.
+    // `test/affinity-wire.test.ts` measures what each dialect actually emits.
+    const models = modelsFromApiResponse(API_BODY);
+    const configs = toProviderModelConfigs(models, "http://127.0.0.1:8317");
+    const claude = configs.find((c) => c.id === "claude-sonnet-4-6");
+    const gpt = configs.find((c) => c.id === "gpt-5.4");
+
+    expect(gpt?.compat?.sendSessionAffinityHeaders).toBe(true);
+    expect(gpt?.compat?.sessionAffinityFormat).toBe("openrouter");
+    expect(claude?.compat?.sendSessionAffinityHeaders).toBe(true);
+    expect(claude?.compat?.sessionAffinityFormat).toBe("openrouter");
+  });
+
   test("picker label strips the relay prefix; the id stays exact", () => {
     const models = modelsFromApiResponse(API_BODY);
     const configs = toProviderModelConfigs(models, "http://127.0.0.1:8317");

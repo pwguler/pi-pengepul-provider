@@ -350,7 +350,12 @@ export function toProviderModelConfigs(
   contextWindow: number
   maxTokens: number
   thinkingLevelMap?: Record<string, string | null>
-  compat?: { forceAdaptiveThinking?: boolean; supportsLongCacheRetention?: boolean }
+  compat?: {
+    forceAdaptiveThinking?: boolean
+    supportsLongCacheRetention?: boolean
+    sendSessionAffinityHeaders?: boolean
+    sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter"
+  }
 }> {
   return models.map((model) => {
     const adaptive = model.dialect === "anthropic-messages" && model.reasoning
@@ -382,14 +387,44 @@ export function toProviderModelConfigs(
       // unsupported so pi omits the thinking param entirely (server default
       // = adaptive), and forceAdaptiveThinking routes an explicit level to
       // {type:"adaptive"} + effort instead of budget_tokens.
-      ...(adaptive || longCacheRetention
-        ? {
-            compat: {
-              ...(adaptive ? { forceAdaptiveThinking: true as const } : {}),
-              ...(longCacheRetention ? { supportsLongCacheRetention: true as const } : {}),
-            },
-          }
-        : {}),
+      // Both dialects pin both fields, and that is why `compat` is
+      // unconditional. The relay's prompt-cache affinity key resolves in this
+      // order: `x-claude-code-session-id`, `x-session-id`, the body's
+      // `prompt_cache_key`, then a hash of the cacheable request prefix
+      // (app.rs `conversation_key`). pi emits `x-session-id` only for the
+      // `openrouter` affinity format, and only when the send flag is set;
+      // the auto-detected defaults are wrong here in both cases
+      // (openai-completions picks `openai`: session_id + x-client-request-id +
+      // x-session-affinity; anthropic-messages picks nothing). The header is
+      // the cheaper and more explicit of the two signals and it outranks the
+      // body field, so pinning it keeps a session's account stable by the
+      // relay's first rule rather than its third. Losing the pin costs a
+      // session that migrates between pooled accounts its whole prefix: the
+      // upstream cache is per account.
+      //
+      // Measured, not assumed — `test/affinity-wire.test.ts` dumps both bodies:
+      // openai-completions carries `prompt_cache_key: <sessionId>` (and
+      // `prompt_cache_retention: "24h"`) under PI_CACHE_RETENTION=long, so the
+      // body field alone would name the conversation; anthropic-messages
+      // carries no `prompt_cache_key` at all, and pi-ai hardcodes
+      // `x-session-affinity` there, which this relay does not read. Messages
+      // traffic therefore rests entirely on the relay's prefix fallback until
+      // a pi release honours `sessionAffinityFormat` on that dialect.
+      //
+      // The two dialects do not land at the same time. openai-completions
+      // honors `sessionAffinityFormat` in every released pi. anthropic-messages
+      // only reads it from the unreleased change on pi main (commit
+      // bbb61e34a); through pi-ai 0.85.1 that client hardcodes the header name
+      // `x-session-affinity`, which this relay does not read, so the Claude
+      // pin below is inert until pi ships it. Pin now rather than later: the
+      // cost of an ignored header is zero, and the cost of forgetting is
+      // silently re-billed Claude prefixes.
+      compat: {
+        ...(adaptive ? { forceAdaptiveThinking: true as const } : {}),
+        ...(longCacheRetention ? { supportsLongCacheRetention: true as const } : {}),
+        sendSessionAffinityHeaders: true as const,
+        sessionAffinityFormat: "openrouter" as const,
+      },
     }
   })
 }

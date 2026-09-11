@@ -4,6 +4,8 @@ import { createServer, type Server } from "node:http";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessageEventStream, Context, Model } from "@earendil-works/pi-ai";
 
+import { modelsFromApiResponse, toProviderModelConfigs } from "../extensions/models.ts";
+
 /**
  * Wire round trip: pi-ai's builtin stream functions, pointed at a mock pengepul
  * relay through this provider's model configs, must reach the right route and
@@ -42,10 +44,12 @@ describe("pengepul wire round trip", () => {
   let baseUrl: string;
   let lastRoute: string | undefined;
   let lastAuth: string | undefined;
+  let lastHeaders: Record<string, string | string[] | undefined> = {};
 
   beforeEach(async () => {
     server = createServer((req, res) => {
       lastRoute = req.url;
+      lastHeaders = { ...req.headers };
       lastAuth =
         (req.headers["authorization"] as string | undefined) ??
         (req.headers["x-api-key"] as string | undefined);
@@ -116,4 +120,42 @@ describe("pengepul wire round trip", () => {
     expect(text && "text" in text ? text.text : "").toContain("pong");
     expect(message?.stopReason).toBe("stop");
   });
+
+  test("OpenAI Chat Completions wire carries the relay's session affinity header", async () => {
+    // Production mapping, not a hand-built model: the relay's conversation_key
+    // reads x-session-id before it reads the body's `prompt_cache_key`, pi
+    // emits that header only for the openrouter affinity format, and the
+    // detected default for a non-OpenRouter base URL is `openai` (session_id +
+    // x-client-request-id + x-session-affinity) — a header set the relay
+    // ignores. This is the end-to-end proof the config pins both fields, so a
+    // session that hops accounts mid-conversation keeps its cached prefix
+    // instead of re-billing it.
+    const [config] = toProviderModelConfigs(
+      modelsFromApiResponse({
+        object: "list",
+        data: [{ id: "gpt-5.4", object: "model", owned_by: "codex" }],
+      }),
+      baseUrl,
+    );
+    const wireModel = {
+      ...model("openai-completions", "gpt-5.4"),
+      compat: config?.compat,
+    } as unknown as Model<"openai-completions">;
+
+    await collect(
+      streamSimple(wireModel, context, { apiKey: "sk-local-e2e", sessionId: "sess-pengepul-1" }),
+    );
+
+    expect(lastRoute).toBe("/v1/chat/completions");
+    expect(lastHeaders["x-session-id"]).toBe("sess-pengepul-1");
+    expect(lastHeaders["x-session-affinity"]).toBeUndefined();
+  });
+
+  // No Messages-dialect affinity test here: through pi-ai 0.85.1 the
+  // anthropic-messages client hardcodes `x-session-affinity` and ignores
+  // `compat.sessionAffinityFormat`, which this relay does not read. The pin in
+  // models.ts is forward-compatible — it takes effect on a pi release carrying
+  // the sessionAffinityFormat support that pi main has — so the config-level
+  // assertion in models.test.ts is the only honest test until then, and
+  // affinity-wire.test.ts records the absence it is waiting on.
 });
