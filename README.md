@@ -91,6 +91,31 @@ npx tsc --noEmit
 bun scripts/e2e-live.ts # live e2e against a running relay; sends one tiny completion
 ```
 
+## Releasing
+
+Releases publish from CI on a version tag. Bump, tag, push:
+
+```sh
+VERSION=0.2.3
+npm version "$VERSION" --no-git-tag-version
+git add package.json package-lock.json
+git commit -m "chore(release): v$VERSION"
+git tag "v$VERSION"
+git push origin main --tags
+```
+
+`.github/workflows/publish.yml` then runs the full test suite and refuses the
+release unless the tag matches `package.json`, the tagged commit is on `main`,
+and the version is not already on the registry. It publishes with a provenance
+attestation linking the tarball to this repository and commit.
+
+Publishing needs a repository secret named `NPM_TOKEN`: an npm **automation**
+token, or a granular token with publish rights and 2FA bypass enabled. A token
+that prompts for an OTP cannot publish unattended.
+
+`.github/workflows/ci.yml` runs typecheck and tests on pull requests and pushes
+to `main`, and is the same gate the publish job depends on.
+
 ## License
 
 MIT
