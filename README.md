@@ -109,9 +109,27 @@ release unless the tag matches `package.json`, the tagged commit is on `main`,
 and the version is not already on the registry. It publishes with a provenance
 attestation linking the tarball to this repository and commit.
 
-Publishing needs a repository secret named `NPM_TOKEN`: an npm **automation**
-token, or a granular token with publish rights and 2FA bypass enabled. A token
-that prompts for an OTP cannot publish unattended.
+Publishing needs a repository secret named `NPM_TOKEN`, holding a granular
+access token:
+
+- **Permissions**: *Read and write*. *Read-only*, and the *stage only* variant
+  of read and write, cannot run `npm publish`.
+- **Packages and scopes**: *All packages*.
+- **Bypass two-factor authentication**: ticked. A token that prompts for an OTP
+  cannot publish unattended.
+- **Expiration**: whatever you will actually remember to rotate. When it lapses,
+  the release fails at the publish step.
+
+npm removed classic tokens in November 2025, so granular is the only kind that
+exists. On the token form, leave **Organizations** at *No access*: this package
+lives in a user scope (`@pwguler`), not an organization, so a personal account
+has nothing to select there. Choosing *Only select packages and scopes* instead
+of *All packages* asks for a scope selection that such an account cannot
+satisfy.
+
+Trusted publishing (OIDC) is the alternative: no secret to store or rotate, and
+provenance is generated automatically. It needs a one-time configuration on the
+package's npm settings page instead of a token.
 
 `.github/workflows/ci.yml` runs typecheck and tests on pull requests and pushes
 to `main`, and is the same gate the publish job depends on.
