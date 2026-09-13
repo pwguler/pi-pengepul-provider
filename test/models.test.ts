@@ -42,10 +42,10 @@ describe("catalogIdForms", () => {
       "deepseek-v4-pro",
       "deepseek/deepseek-v4-pro",
     ]);
-    expect(catalogIdForms("openrouter/openai/gpt-5.4:batch")).toEqual([
-      "openrouter/openai/gpt-5.4:batch",
-      "gpt-5.4:batch",
-      "openai/gpt-5.4:batch",
+    expect(catalogIdForms("openrouter/openai/gpt-6-astra")).toEqual([
+      "openrouter/openai/gpt-6-astra",
+      "gpt-6-astra",
+      "openai/gpt-6-astra",
     ]);
   });
 
@@ -56,6 +56,35 @@ describe("catalogIdForms", () => {
 });
 
 describe("modelsFromApiResponse", () => {
+  test("leaves out the batch routes OpenRouter refuses on this wire", () => {
+    // The relay lists them, and OpenRouter answers every one with 404 "This
+    // model is only available through the Batch API" - measured on anthropic,
+    // openai and Qwen batch ids alike. A picker entry that can only fail is
+    // worse than no entry. The `:free` variants answer 200 and stay.
+    const body = {
+      object: "list",
+      data: [
+        { id: "openrouter/anthropic/claude-opus-5:batch", object: "model", owned_by: "openrouter" },
+        { id: "openrouter/openai/gpt-5.4", object: "model", owned_by: "openrouter" },
+        { id: "openrouter/google/gemma-4-31b-it:free", object: "model", owned_by: "openrouter" },
+      ],
+    };
+
+    const models = modelsFromApiResponse(body);
+    expect(models.map((m) => m.id)).toEqual([
+      "openrouter/openai/gpt-5.4",
+      "openrouter/google/gemma-4-31b-it:free",
+    ]);
+  });
+
+  test("a catalog of nothing but batch routes stays empty rather than usable", () => {
+    const body = {
+      object: "list",
+      data: [{ id: "openrouter/openai/gpt-5.4:batch", object: "model", owned_by: "openrouter" }],
+    };
+    expect(() => modelsFromApiResponse(body)).toThrow();
+  });
+
   test("parses a valid list and splits dialect by id", () => {
     const models = modelsFromApiResponse(API_BODY);
     expect(models).toHaveLength(3);
@@ -463,15 +492,16 @@ describe("modelsFromApiResponse", () => {
   });
 
   test("family heuristics see through every relay routing prefix", () => {
-    // The relay prefixes ids with its upstream namespace. The family has to be
-    // read from the final segment, and the OpenAI branch stays on the reasoning
-    // families: gpt-4o is not one, however it is spelled.
+    // The relay prefixes ids with its upstream namespace, and a surviving
+    // route qualifier rides along. The family has to be read from the final
+    // segment, and the OpenAI branch stays on the reasoning families: gpt-4o
+    // is not one, however it is spelled.
     const body = {
       object: "list",
       data: [
         { id: "openrouter/openai/gpt-5-image-mini", object: "model", owned_by: "openrouter" },
-        { id: "openrouter/openai/gpt-oss-20b:batch", object: "model", owned_by: "openrouter" },
-        { id: "openrouter/openai/gpt-4o:batch", object: "model", owned_by: "openrouter" },
+        { id: "openrouter/openai/gpt-oss-120b:free", object: "model", owned_by: "openrouter" },
+        { id: "openrouter/openai/gpt-4o", object: "model", owned_by: "openrouter" },
         { id: "openrouter/openai/gpt-3.5-turbo", object: "model", owned_by: "openrouter" },
       ],
     };
@@ -654,6 +684,23 @@ describe("modelsFromCache", () => {
     expect(cached).toHaveLength(3);
     expect(cached[0]?.dialect).toBe("anthropic-messages");
     expect(cached[0]?.input).toEqual(["text"]);
+  });
+
+  test("a cache written before the batch routes were dropped sheds them too", () => {
+    // The cache covers a briefly absent relay, so it must not be the path that
+    // resurrects a route the live catalog now leaves out. This is the one
+    // shape the version guard cannot catch: v6 is still current, it simply
+    // predates the filter.
+    const models = modelsFromApiResponse(API_BODY);
+    const cached = modelsFromCache({
+      version: 6,
+      models: [...models.map((m) => ({ ...m })), { ...models[2]!, id: "openrouter/openai/gpt-5.4:batch" }],
+    });
+    expect(cached.map((m) => m.id)).toEqual([
+      "claude-sonnet-4-6",
+      "claude-opus-5",
+      "gpt-5.4",
+    ]);
   });
 
   test("throws on a wrong cache version (stale v1 windows are rejected)", () => {

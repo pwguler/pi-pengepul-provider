@@ -359,6 +359,26 @@ function stringField(record: Record<string, unknown>, key: string): string {
   return value
 }
 
+/**
+ * The relay lists OpenRouter's batch routes as models, and OpenRouter answers
+ * every one of them on the chat wire with 404 "This model is only available
+ * through the Batch API". Nothing pi sends can reach them, so they are left
+ * out of the catalog rather than offered as a picker entry that always fails.
+ */
+function isBatchRoute(id: string): boolean {
+  return id.endsWith(":batch")
+}
+
+/**
+ * Drop the ids this relay cannot serve on either wire. Applied on the way in
+ * from the relay and on the way in from the cache: the cache is what covers a
+ * briefly absent relay, so it must not be the path that resurrects a route
+ * the live catalog would have dropped.
+ */
+function servableModels(models: readonly PengepulModel[]): PengepulModel[] {
+  return models.filter((model) => !isBatchRoute(model.id))
+}
+
 /** Parse the raw `/v1/models` body into models. Throws on a malformed body. */
 export function modelsFromApiResponse(
   value: unknown,
@@ -369,12 +389,16 @@ export function modelsFromApiResponse(
 
   const data = value["data"]
   if (!Array.isArray(data)) throw new Error("Expected models response data to be an array")
-  if (data.length === 0) throw new Error("pengepul returned an empty model catalog")
 
-  return data.map((entry) => {
-    if (!isRecord(entry)) throw new Error("Expected model entry to be an object")
-    return toPengepulModel(entry, lookupBuiltin)
-  })
+  const models = servableModels(
+    data.map((entry) => {
+      if (!isRecord(entry)) throw new Error("Expected model entry to be an object")
+      return toPengepulModel(entry, lookupBuiltin)
+    }),
+  )
+
+  if (models.length === 0) throw new Error("pengepul returned an empty model catalog")
+  return models
 }
 
 /** Map models to pi `ProviderModelConfig` entries. Pure. */
@@ -685,7 +709,7 @@ export function modelsFromCache(value: unknown): readonly PengepulModel[] {
     }
   })
   if (parsed.length === 0) throw new Error("pengepul cache holds no valid models")
-  return parsed
+  return servableModels(parsed)
 }
 
 async function readCache(cachePath: string): Promise<readonly PengepulModel[]> {
