@@ -60,8 +60,13 @@ describe("modelsFromApiResponse", () => {
     // The relay lists them, and OpenRouter refuses them with 404 "This model is
     // only available through the Batch API" - confirmed on 10 of the relay's 77
     // batch ids across anthropic, openai, qwen, deepseek and z-ai. A picker
-    // entry that can only fail is worse than no entry. The `:free` variants
-    // answer 200 and stay.
+    // entry that can only fail is worse than no entry.
+    //
+    // The `:free` variants stay, and not merely because they answer 200: sent
+    // a tools payload, nex-agi/nex-n2.5-pro:free and meituan/LongCat-2.0:free
+    // both returned a real get_time call. The one that failed did so with 429
+    // from the free tier, which is a rate limit rather than a model that
+    // cannot be used.
     const body = {
       object: "list",
       data: [
@@ -357,11 +362,23 @@ describe("modelsFromApiResponse", () => {
     }
   });
 
+  test("the namespace match is case-insensitive like the dialect's", () => {
+    const body = {
+      object: "list",
+      data: [
+        { id: "CommandCode/deepseek/deepseek-v4.9-flash", object: "model", owned_by: "CommandCode", reasoning: true },
+      ],
+    };
+    const models = modelsFromApiResponse(body, () => undefined);
+    expect(models[0]?.thinkingLevelMap?.max).toBe("max");
+  });
+
   test("the fallback stays off known ids, other namespaces, and non-reasoning models", () => {
     // An id pi's catalog does carry keeps that catalog's answer even when the
     // answer is "provider default": a hit with no map must not grow one. The
-    // openrouter namespace is unmeasured — the relay resolves its account
-    // before validating effort — so it keeps pi's default too.
+    // openrouter namespace keeps pi's default for the same reason, and the
+    // relay does not validate its enum there, so its map carries `off` alone -
+    // see the minimal test below for why commandcode differs.
     const body = {
       object: "list",
       data: [
@@ -383,8 +400,44 @@ describe("modelsFromApiResponse", () => {
 
     const models = modelsFromApiResponse(body, lookup);
     expect(models[0]?.thinkingLevelMap).toEqual({ off: null, minimal: null });
-    expect(models[1]?.thinkingLevelMap).toEqual({ off: null, minimal: null });
+    expect(models[1]?.thinkingLevelMap).toEqual({ off: null });
     expect(models[2]?.thinkingLevelMap).toBeUndefined();
+  });
+
+  test("minimal is hidden only where the relay refuses it", () => {
+    // Measured on the running relay: `commandcode/` answers 400 Invalid option:
+    // expected one of "low"|"medium"|"high"|"xhigh"|"max" for minimal, while
+    // `openrouter/` validates nothing and answers 200. Hiding it on openrouter
+    // costs 166 of the 227 models there that reason a level the relay takes.
+    //
+    // `off` is not symmetric and stays hidden everywhere: `none` is refused by
+    // gemini-3.8-flash and accepted by deepseek, so neither answer generalises.
+    const body = {
+      object: "list",
+      data: [
+        { id: "openrouter/google/gemini-3.8-flash", object: "model", owned_by: "openrouter", reasoning: true },
+        { id: "openrouter/z-ai/glm-5.3-flash", object: "model", owned_by: "openrouter", reasoning: true },
+        { id: "commandcode/deepseek/deepseek-v4.9-flash", object: "model", owned_by: "commandcode", reasoning: true },
+      ],
+    };
+    const lookup: BuiltinModelLookup = (id) =>
+      id === "openrouter/z-ai/glm-5.3-flash"
+        ? {
+            reasoning: true,
+            contextWindow: 131_072,
+            maxTokens: 32_768,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            // A foreign spelling of a level this namespace takes: case-folded,
+            // not culled like the values the enum does not know.
+            thinkingLevelMap: { minimal: "MINIMAL", off: "none" },
+          }
+        : undefined;
+
+    const models = modelsFromApiResponse(body, lookup);
+    expect(models[0]?.thinkingLevelMap).toEqual({ off: null });
+    expect(models[1]?.thinkingLevelMap).toEqual({ off: null, minimal: "minimal" });
+    expect(models[2]?.thinkingLevelMap).toEqual({ off: null, minimal: null, max: "max" });
   });
 
   test("relay reasoning does not overlay the anthropic adaptive path", () => {
@@ -404,6 +457,25 @@ describe("modelsFromApiResponse", () => {
     const models = modelsFromApiResponse(body, () => undefined);
     expect(models[0]?.dialect).toBe("anthropic-messages");
     expect(models[0]?.thinkingLevelMap).toBeUndefined();
+  });
+
+  test("a relay entry tagged anthropic reasons even when no name or catalog says so", () => {
+    // The promotion is the relay's own claim about a model pi's catalog does
+    // not know yet, and it has to be the reason reasoning comes out true here:
+    // the name matches no reasoning family, the catalog is empty, and the
+    // relay sends no reasoning flag. Without the tag the same entry is not
+    // reasoning and gets no level map, which is the control beside it.
+    const entry = { id: "commandcode/some-new-claude-alias", object: "model" };
+    const tagged = modelsFromApiResponse(
+      { object: "list", data: [{ ...entry, owned_by: "anthropic" }] },
+      () => undefined,
+    );
+    expect(tagged[0]?.reasoning).toBe(true);
+    expect(tagged[0]?.thinkingLevelMap?.max).toBe("max");
+
+    const untagged = modelsFromApiResponse({ object: "list", data: [entry] }, () => undefined);
+    expect(untagged[0]?.reasoning).toBe(false);
+    expect(untagged[0]?.thinkingLevelMap).toBeUndefined();
   });
 
   test("a catalog map offering the relay's rejected levels is overlaid", () => {
@@ -478,9 +550,9 @@ describe("modelsFromApiResponse", () => {
           };
 
     const models = modelsFromApiResponse(body, lookup);
-    expect(models[0]?.thinkingLevelMap).toEqual({ off: null, minimal: null, low: "low", high: "high" });
+    expect(models[0]?.thinkingLevelMap).toEqual({ off: null, low: "low", high: "high" });
     // "default" is not a relay effort under any casing: keep the level hidden.
-    expect(models[1]?.thinkingLevelMap).toEqual({ off: null, minimal: null, high: null });
+    expect(models[1]?.thinkingLevelMap).toEqual({ off: null, high: null });
   });
 
   test("family heuristics see through every relay routing prefix", () => {
@@ -629,10 +701,15 @@ describe("toProviderModelConfigs", () => {
   });
 
   test("picker label strips the relay prefix; the id stays exact", () => {
-    const models = modelsFromApiResponse(API_BODY);
+    // The fixture needs a prefixed id: every id in API_BODY is bare, so this
+    // test passed for a year with the prefix-stripping removed entirely.
+    const models = modelsFromApiResponse({
+      object: "list",
+      data: [{ id: "openrouter/openai/gpt-5.4", object: "model", owned_by: "openrouter" }],
+    });
     const configs = toProviderModelConfigs(models, "http://127.0.0.1:8317");
-    const prefixed = configs.find((c) => c.id === "claude-sonnet-4-6");
-    expect(prefixed?.name).toBe("claude-sonnet-4-6 (pengepul)");
+    expect(configs[0]?.name).toBe("openai/gpt-5.4 (pengepul)");
+    expect(configs[0]?.id).toBe("openrouter/openai/gpt-5.4");
   });
 });
 
@@ -676,6 +753,21 @@ describe("modelsFromCache", () => {
     expect(cached).toHaveLength(3);
     expect(cached[0]?.dialect).toBe("anthropic-messages");
     expect(cached[0]?.input).toEqual(["text"]);
+  });
+
+  test("a cache holding nothing but batch routes is rejected as invalid", () => {
+    // Filtering before the guard matters here. With the guard first, this cache
+    // parses to an empty list, and loadPengepulModels reports source "cache"
+    // with "Using the cached catalog" while handing pi zero models - a warning
+    // that contradicts itself. Throwing routes it to the accurate "no valid
+    // cached catalog" message instead.
+    const models = modelsFromApiResponse(API_BODY);
+    const batch = {
+      ...models[2]!,
+      id: "openrouter/openai/gpt-5.4:batch",
+      name: "gpt-5.4:batch (pengepul)",
+    };
+    expect(() => modelsFromCache({ version: 6, models: [batch] })).toThrow();
   });
 
   test("a cache written before the batch routes were dropped sheds them too", () => {

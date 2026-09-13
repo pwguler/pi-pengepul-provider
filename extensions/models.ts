@@ -141,19 +141,23 @@ function heuristicMeta(id: string): BuiltinModelMeta {
 }
 
 /**
- * The catalog-id shapes to try for a relay id, most specific first.
+ * The catalog-id shapes to try for a relay id, in the order they are tried.
  *
- * The relay prefixes every id with the routing namespace it came from, and
- * that namespace is no part of the catalog id:
- * `commandcode/deepseek/deepseek-v4-pro` is the deepseek catalog's
- * `deepseek/deepseek-v4-pro`, and `openrouter/openai/gpt-6-astra` is the
- * openrouter catalog's `openai/gpt-6-astra`. Neither the full id nor its last
- * segment reaches those, so the namespace has to come off before the lookup
- * can answer.
+ * The order is load-bearing, and it is not "most specific first": the last
+ * segment is tried before the namespace-stripped id, which is what the
+ * catalogs were measured to give. For 141 of the relay's 527 ids the two
+ * shapes resolve to different entries and the last segment wins - 
+ * `commandcode/deepseek/deepseek-v4-pro` takes the deepseek catalog's bare
+ * `deepseek-v4-pro` (input 0.435) rather than openrouter's
+ * `deepseek/deepseek-v4-pro` (input 0.890, and a different level map).
+ * Reordering these shapes repoints those ids, so the test pins the order.
+ *
+ * The namespace-stripped shape is the third fallback: the only one that
+ * reaches an id whose catalog entry both the full id and the last segment
+ * miss, which is three of the relay's 527 at the time of writing.
  */
 export function catalogIdForms(id: string): readonly string[] {
-  const withoutNamespace = bareId(id)
-  return [...new Set([id, modelName(id), withoutNamespace, modelName(withoutNamespace)])]
+  return [...new Set([id, modelName(id), bareId(id)])]
 }
 
 /**
@@ -231,8 +235,9 @@ function optionalRate(value: unknown): number | undefined {
  *
  * pi hides `xhigh` and `max` unless a model's map names them, so an id no
  * catalog answers for dropped to low/medium/high and could never send the top
- * of the scale. Two of the relay's 361 reasoning openai-completions ids rest
- * on this today; the lookup's namespace-stripped shapes answer for the rest.
+ * of the scale. Two of the 296 reasoning openai-completions ids the provider
+ * registers rest on this today; the lookup's namespace-stripped shapes answer
+ * for the rest.
  *
  * Only `max` is named. DeepSeek documents low/high/max for the
  * OpenAI-compatible wire and folds `minimal` into low, `medium` and `xhigh`
@@ -244,13 +249,18 @@ function optionalRate(value: unknown): number | undefined {
  *
  * Measured against the running relay: on `commandcode/` ids every requested
  * effort except `minimal` is accepted, and one error text — the relay's own
- * enum — answers all eight upstream families, so the vocabulary belongs to the
- * relay rather than to any one model. `minimal` 400s, and the overlay below
- * nulls it.
+ * enum — answers all nine families probed (deepseek, Qwen, MiniMax, google,
+ * moonshotai, xiaomi, stepfun, nvidia, inclusionai), nine of the eighteen the
+ * namespace carries, so the vocabulary belongs to the relay rather than to any
+ * one model. `minimal` 400s, and the overlay below nulls it.
  *
- * `openrouter/` ids are left alone: the relay resolves their account before
- * validating effort (503 here), so nothing there is measured, and pi's own
- * openrouter catalog still advertises `xhigh` without `max`.
+ * `openrouter/` ids are left alone, but not because that namespace is
+ * unmeasurable: it validates no effort enum at all, so a probe there answers
+ * 200 whether the level exists upstream or not. What it serves is also
+ * heterogeneous - image generators, R1-class models that take no effort
+ * parameter at all - and pi's openrouter entries spell DeepSeek's top level
+ * `xhigh` rather than `max`, so a namespace-wide rule there has nothing solid
+ * to stand on.
  */
 function fallbackLevelMap(id: string): Record<string, string | null> | undefined {
   return id.toLowerCase().startsWith("commandcode/") ? { max: "max" } : undefined
@@ -303,18 +313,24 @@ function toPengepulModel(
   const meta = metaFor(entry, id, dialect, lookup)
   const reasoning = meta.reasoning
 
-  // The relay enforces reasoning_effort low|medium|high|xhigh|max at its
-  // request layer, uniformly across families: `minimal` 400s and its thinking
-  // toggle never actually disables thinking. That holds no matter where the
-  // reasoning knowledge came from, so every openai-completions reasoning model
-  // gets the relay's shape: inherited strings case-folded to the enum (pi's
-  // catalogs spell Google efforts `HIGH` and Qwen's `default`), values that
-  // match under no casing hidden, and off/minimal always null. Overlay, never
-  // replace: inherited nulls keep their levels hidden. The Messages dialect
-  // needs none of this: it folds `minimal` into `low` and already nulls `off`
-  // via forceAdaptiveThinking.
+  // The relay's request layer validates reasoning_effort on `commandcode/`
+  // ids: `minimal` 400s there, and its thinking toggle never actually disables
+  // thinking. On `openrouter/` ids it validates nothing, so `minimal` is a real
+  // level there and is left in place. `off` is different and stays nulled
+  // everywhere: `none` is refused by some upstreams (gemini-3.8-flash 400s on
+  // it) and accepted by others (deepseek), which is no basis for sending it.
+  // Either way every openai-completions reasoning model gets the relay's shape:
+  // inherited strings case-folded to the enum (pi's catalogs spell Google
+  // efforts `HIGH` and Qwen's `default`), values that match under no casing
+  // hidden. Overlay, never replace: inherited nulls keep their levels hidden.
+  // The Messages dialect needs none of this: it folds `minimal` into `low` and
+  // already nulls `off` via forceAdaptiveThinking.
   const enforceRelayEnum = reasoning && dialect === "openai-completions"
-  const thinkingLevelMap = relaySafeLevelMap(meta.thinkingLevelMap, enforceRelayEnum)
+  const thinkingLevelMap = relaySafeLevelMap(
+    meta.thinkingLevelMap,
+    enforceRelayEnum,
+    relayAcceptsMinimal(id),
+  )
 
   return {
     id,
@@ -333,31 +349,50 @@ function toPengepulModel(
 const RELAY_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"])
 
 /**
+ * Whether the relay's request layer takes `minimal` for this id.
+ *
+ * Measured: `commandcode/` validates its enum and answers 400 Invalid option:
+ * expected one of "low"|"medium"|"high"|"xhigh"|"max", while `openrouter/`
+ * validates nothing and answers 200 - so hiding `minimal` there costs 166 of
+ * the 227 openrouter models that reason, a level the relay accepts.
+ *
+ * `none` is not the same story: gemini-3.8-flash answers 400 on it while
+ * deepseek accepts it, so `off` stays hidden in every namespace. An unmeasured
+ * namespace keeps the conservative default too.
+ */
+function relayAcceptsMinimal(id: string): boolean {
+  return id.toLowerCase().startsWith("openrouter/")
+}
+
+/**
  * Shape an inherited level map for the relay's wire. With `enforce` (an
  * openai-completions reasoning model) the relay's enum is the only vocabulary
  * that reaches it: inherited strings are case-folded to the enum or hidden,
- * and off/minimal are always hidden. Without it the map passes through.
+ * and `off` is always hidden. `minimal` is hidden unless the namespace is
+ * known to take it. Without `enforce` the map passes through.
  */
 function relaySafeLevelMap(
   inherited: Record<string, string | null> | undefined,
   enforce: boolean,
+  acceptsMinimal = false,
 ): Record<string, string | null> | undefined {
   if (!enforce) return inherited ? { ...inherited } : undefined
 
   const map: Record<string, string | null> = {}
   for (const [level, mapped] of Object.entries(inherited ?? {})) {
-    map[level] = typeof mapped === "string" ? relayEffort(mapped) : mapped
+    map[level] = typeof mapped === "string" ? relayEffort(mapped, acceptsMinimal) : mapped
   }
   map["off"] = null
-  map["minimal"] = null
+  if (!acceptsMinimal) map["minimal"] = null
   return map
 }
 
 /** The relay's effort enum, case-folded; null keeps the level out of the picker. */
-function relayEffort(value: string): string | null {
+function relayEffort(value: string, acceptsMinimal: boolean): string | null {
   if (RELAY_EFFORTS.has(value)) return value
   const lower = value.toLowerCase()
-  return RELAY_EFFORTS.has(lower) ? lower : null
+  if (RELAY_EFFORTS.has(lower)) return lower
+  return acceptsMinimal && lower === "minimal" ? lower : null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -726,8 +761,9 @@ export function modelsFromCache(value: unknown): readonly PengepulModel[] {
         : {}),
     }
   })
-  if (parsed.length === 0) throw new Error("pengepul cache holds no valid models")
-  return servableModels(parsed)
+  const servable = servableModels(parsed)
+  if (servable.length === 0) throw new Error("pengepul cache holds no valid models")
+  return servable
 }
 
 async function readCache(cachePath: string): Promise<readonly PengepulModel[]> {

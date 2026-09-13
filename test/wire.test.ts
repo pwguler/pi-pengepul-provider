@@ -114,9 +114,10 @@ describe("pengepul wire round trip", () => {
       }),
     );
 
-    // pi-ai 0.85.1 appends `?beta=true` to the Messages path; the relay routes
-    // on the path and ignores the query, so the assertion covers both rather
-    // than pinning the client's current spelling.
+    // pi-ai 0.85.1 (through @anthropic-ai/sdk 0.123.0, which this branch's
+    // lockfile bump pulled in) appends `?beta=true` to the Messages path; the
+    // relay routes on the path and ignores the query, so the assertion covers
+    // both rather than pinning the client's current spelling.
     expect(lastRoute?.split("?")[0]).toBe("/v1/messages");
     expect(lastAuth).toBe("sk-local-e2e"); // x-api-key header, no Bearer prefix
     const text = message?.content.find((c) => c.type === "text");

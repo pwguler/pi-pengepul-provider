@@ -18,6 +18,11 @@ const MODELS_BODY = {
     { id: "claude-sonnet-4-6", object: "model", created: 1, owned_by: "anthropic" },
     { id: "claude-opus-5", object: "model", created: 2, owned_by: "anthropic" },
     { id: "gpt-5.4", object: "model", created: 3, owned_by: "codex" },
+    // Prefixed and multi-segment on purpose: this is the only id here whose
+    // catalog entry is reachable by a shape other than the id itself, so it is
+    // what pins the lookup's multi-form walk. With the walk removed, every
+    // bare fixture above still resolves and only this one changes.
+    { id: "commandcode/deepseek/deepseek-v4-pro", object: "model", created: 4, owned_by: "commandcode" },
   ],
 };
 
@@ -75,7 +80,7 @@ describe("pi-pengepul-provider end to end", () => {
     const registration = registered.find((r) => r.name === "pengepul");
     expect(registration).toBeDefined();
     const models = registration!.config.models ?? [];
-    expect(models.length).toBe(3);
+    expect(models.length).toBe(4);
 
     const claude = models.find((m) => m.id === "claude-sonnet-4-6");
     expect(claude?.api).toBe("anthropic-messages");
@@ -88,6 +93,14 @@ describe("pi-pengepul-provider end to end", () => {
     const gpt = models.find((m) => m.id === "gpt-5.4");
     expect(gpt?.api).toBe("openai-completions");
     expect(gpt?.baseUrl).toBe(`${baseUrl}/v1`);
+
+    // The multi-segment id resolved through a catalog shape, not a heuristic:
+    // the mock relay sends no pricing, and the heuristic path prices every
+    // unknown model at zero, so a nonzero input rate can only come from the
+    // deepseek catalog's entry for it.
+    const deepseek = models.find((m) => m.id === "commandcode/deepseek/deepseek-v4-pro");
+    expect(deepseek?.cost.input).toBeGreaterThan(0);
+    expect(deepseek?.api).toBe("openai-completions");
 
     // Model discovery used the configured API key.
     expect(received["path"]).toBe("/v1/models");
