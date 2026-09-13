@@ -141,6 +141,24 @@ function heuristicMeta(id: string): BuiltinModelMeta {
 }
 
 /**
+ * The catalog-id shapes to try for a relay id, most specific first.
+ *
+ * The relay prefixes every id with the routing namespace it came from, and
+ * that namespace is no part of the catalog id: the relay's
+ * `openrouter/openai/gpt-5.4:batch` is the openrouter catalog's
+ * `openai/gpt-5.4:batch`, and `commandcode/deepseek/deepseek-v4-pro` is the
+ * deepseek catalog's `deepseek/deepseek-v4-pro`. Dropping that one leading
+ * segment is what recovers the real entry - its pricing and thinking level
+ * map - for every id pi's catalogs do not carry verbatim: the relay's `:batch`
+ * and `:free` variants of catalog models, and vendor-prefixed ids such as
+ * `openai/gpt-6-astra` that no bare-id or last-segment shape can reach.
+ */
+export function catalogIdForms(id: string): readonly string[] {
+  const withoutNamespace = bareId(id)
+  return [...new Set([id, modelName(id), withoutNamespace, modelName(withoutNamespace)])]
+}
+
+/**
  * Metadata pengepul itself advertises for a model (pengepul >= 0.6.0).
  * Every field is optional: the rollout is partial and older relays send none.
  * `reasoning` is the relay's first-party say on whether the upstream accepts
@@ -215,8 +233,8 @@ function optionalRate(value: unknown): number | undefined {
  *
  * pi hides `xhigh` and `max` unless a model's map names them, so a relay-only
  * id dropped to low/medium/high and could never send the top of the scale. At
- * the time of writing that is seven of the relay's 352 reasoning
- * openai-completions ids, across deepseek, Qwen, google and claude alike.
+ * the time of writing that is five of the relay's 361 reasoning
+ * openai-completions ids, on the deepseek and Qwen lines.
  *
  * Measured against the running relay: on `commandcode/` ids every requested
  * effort except `minimal` is accepted, and one error text — the relay's own

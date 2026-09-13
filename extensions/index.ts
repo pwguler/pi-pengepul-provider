@@ -19,6 +19,7 @@ import { resolveApiKey } from "./api-key.ts"
 import { resolveSettings } from "./config.ts"
 import { modelsUrl } from "./dialect.ts"
 import {
+  catalogIdForms,
   loadCachedPengepulModels,
   loadPengepulModels,
   toProviderModelConfigs,
@@ -53,11 +54,10 @@ function metaFromModel(model: NonNullable<ReturnType<typeof getBuiltinModel>>) {
 }
 
 /**
- * Multi-catalog lookup over pi's builtin models. A commandcode id can live
- * in several catalogs: verbatim under an aggregator (`openrouter`, `baseten`,
- * `together`, ...), bare under a vendor catalog (`deepseek`, `google`,
- * `xai`, ...), or bare lowercased. Try those shapes in that order and take
- * the first hit; reasoning metadata and the thinkingLevelMap flow from it.
+ * Multi-catalog lookup over pi's builtin models. A relay id can match several
+ * catalogs, so each of the id's shapes is tried in turn - verbatim, bare under
+ * a vendor catalog, last segment, and with the routing namespace removed - and
+ * the first hit wins. Reasoning metadata and the thinkingLevelMap flow from it.
  */
 function createBuiltinLookup(): (id: string, dialect: string) => ReturnType<typeof metaFromModel> | undefined {
   type Entry = { provider: string; id: string };
@@ -77,25 +77,20 @@ function createBuiltinLookup(): (id: string, dialect: string) => ReturnType<type
   }
 
   return (id, dialect) => {
-    const candidates: Array<Entry | undefined> = [
-      exact.get(id),
-      exact.get(bareOf(id)),
-      segments.get(bareOf(id)),
-      lower.get(id.toLowerCase()),
-      lower.get(bareOf(id).toLowerCase()),
-    ]
-    for (const candidate of candidates) {
-      if (candidate === undefined) continue
-      const model = getBuiltinModel(candidate.provider as never, candidate.id as never)
-      if (model) return metaFromModel(model)
+    for (const form of catalogIdForms(id)) {
+      const candidates: Array<Entry | undefined> = [
+        exact.get(form),
+        segments.get(form),
+        lower.get(form.toLowerCase()),
+      ]
+      for (const candidate of candidates) {
+        if (candidate === undefined) continue
+        const model = getBuiltinModel(candidate.provider as never, candidate.id as never)
+        if (model) return metaFromModel(model)
+      }
     }
     return undefined
   }
-}
-
-function bareOf(id: string): string {
-  const slash = id.lastIndexOf("/")
-  return slash === -1 ? id : id.slice(slash + 1)
 }
 
 function createProviderConfigFactory(relayBase: string, apiKey: string | undefined) {

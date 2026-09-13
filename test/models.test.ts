@@ -11,6 +11,7 @@ function mockFetch(impl: (url: string, init?: RequestInit) => Promise<Partial<Re
 
 import {
   bareId,
+  catalogIdForms,
   fetchPengepulModels,
   loadPengepulModels,
   modelsFromApiResponse,
@@ -29,6 +30,30 @@ const API_BODY = {
     { id: "gpt-5.4", object: "model", created: 3, owned_by: "codex" },
   ],
 };
+
+describe("catalogIdForms", () => {
+  test("drops the routing namespace so the catalog id is reachable", () => {
+    // The relay's id carries the namespace it was routed through in front of
+    // the catalog's own id, which for aggregated vendors is itself
+    // multi-segment. Tried in order, these shapes recover the real entry and
+    // its thinkingLevelMap instead of falling back to a family heuristic.
+    expect(catalogIdForms("commandcode/deepseek/deepseek-v4-pro")).toEqual([
+      "commandcode/deepseek/deepseek-v4-pro",
+      "deepseek-v4-pro",
+      "deepseek/deepseek-v4-pro",
+    ]);
+    expect(catalogIdForms("openrouter/openai/gpt-5.4:batch")).toEqual([
+      "openrouter/openai/gpt-5.4:batch",
+      "gpt-5.4:batch",
+      "openai/gpt-5.4:batch",
+    ]);
+  });
+
+  test("a bare id yields only itself", () => {
+    expect(catalogIdForms("claude-sonnet-4-6")).toEqual(["claude-sonnet-4-6"]);
+    expect(catalogIdForms("openai/gpt-5.4")).toEqual(["openai/gpt-5.4", "gpt-5.4"]);
+  });
+});
 
 describe("modelsFromApiResponse", () => {
   test("parses a valid list and splits dialect by id", () => {
