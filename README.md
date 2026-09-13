@@ -86,10 +86,27 @@ is set.
 ## Development
 
 ```sh
+npm install
 bun test
 npx tsc --noEmit
 bun scripts/e2e-live.ts # live e2e against a running relay; sends one tiny completion
 ```
+
+The `@earendil-works/*` copies `npm install` writes into `node_modules` are for
+`tsc` and the tests only. At runtime pi serves the extension those modules from
+its own bundle (`loader.js` maps `@earendil-works/pi-ai/providers/all` to a
+virtual module), so the local copies exist to be *type-checked against*, not to
+be the ones in play. Keep them on the host's version:
+
+```sh
+pi --version                                            # host pi release
+cat node_modules/@earendil-works/pi-ai/package.json     # local copy
+```
+
+When they drift, anything measured from this directory describes a different
+model catalog than the running extension sees — the 0.84.4 copy carries 40
+`:batch` entries where 0.85.1 carries 68 — and local verification quietly
+disagrees with production.
 
 ## Releasing
 
