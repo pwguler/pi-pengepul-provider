@@ -234,19 +234,26 @@ function optionalRate(value: unknown): number | undefined {
  * of the scale. Two of the relay's 361 reasoning openai-completions ids rest
  * on this today; the lookup's namespace-stripped shapes answer for the rest.
  *
+ * Only `max` is named. DeepSeek documents low/high/max for the
+ * OpenAI-compatible wire and folds `minimal` into low, `medium` and `xhigh`
+ * into high - which is what pi's own deepseek catalog encodes, hiding `xhigh`
+ * outright and nulling `medium` - but the relay validates one enum for every
+ * family it routes, so the namespace rule cannot tell a vendor alias from a
+ * level in its own right. Naming the top of the scale is the part that is
+ * true whatever the upstream does with it; the rest stays with pi's default.
+ *
  * Measured against the running relay: on `commandcode/` ids every requested
  * effort except `minimal` is accepted, and one error text — the relay's own
  * enum — answers all eight upstream families, so the vocabulary belongs to the
  * relay rather than to any one model. `minimal` 400s, and the overlay below
- * nulls it. The standard low/medium/high levels keep pi's default mapping,
- * which is what the upstream aliases per its own docs.
+ * nulls it.
  *
  * `openrouter/` ids are left alone: the relay resolves their account before
  * validating effort (503 here), so nothing there is measured, and pi's own
  * openrouter catalog still advertises `xhigh` without `max`.
  */
 function fallbackLevelMap(id: string): Record<string, string | null> | undefined {
-  return id.toLowerCase().startsWith("commandcode/") ? { xhigh: "xhigh", max: "max" } : undefined
+  return id.toLowerCase().startsWith("commandcode/") ? { max: "max" } : undefined
 }
 
 /**
@@ -272,9 +279,15 @@ function metaFor(
   // capable, even when pi's catalog does not know its exact id yet.
   const reasoning = meta.reasoning || entry["owned_by"] === "anthropic"
 
-  // A catalog that carries the id has answered the level question, even when
-  // the answer is "provider default", so only a miss reaches for the
-  // namespace's vocabulary - and only where the relay's enum governs the wire.
+  // The lookup searches every provider's catalog, so a hit need not come from
+  // the id's own vendor: github-copilot answers for
+  // `commandcode/google/gemini-3.8-flash` and carries no map, which is silence
+  // about another provider, not an answer about this relay. The fallback still
+  // stops there, deliberately. Measuring this relay shows which efforts it
+  // accepts and never which ones the upstream honours, so an entry's silence
+  // is left as silence and those ids keep pi's default until per-vendor
+  // evidence exists - the way DeepSeek's documented scale settled the ids the
+  // fallback does serve.
   const fallback =
     known || !reasoning || dialect !== "openai-completions" ? undefined : fallbackLevelMap(id)
 
@@ -360,10 +373,15 @@ function stringField(record: Record<string, unknown>, key: string): string {
 }
 
 /**
- * The relay lists OpenRouter's batch routes as models, and OpenRouter answers
- * every one of them on the chat wire with 404 "This model is only available
- * through the Batch API". Nothing pi sends can reach them, so they are left
- * out of the catalog rather than offered as a picker entry that always fails.
+ * The relay lists OpenRouter's batch routes as models, and OpenRouter refuses
+ * them on the chat wire with 404 "This model is only available through the
+ * Batch API". Confirmed on 10 of the relay's 77 batch ids across anthropic,
+ * openai, qwen, deepseek and z-ai; the rest are inferred from the same route
+ * rule, because probing them in bulk does not work - the refusals put the
+ * relay's pooled openrouter account on cooldown, which turns every following
+ * probe into 503 "no available openrouter account" and measures the cooldown
+ * rather than the model. Nothing pi sends can reach them, so they are left
+ * out of the catalog rather than offered as an entry that always fails.
  */
 function isBatchRoute(id: string): boolean {
   return id.endsWith(":batch")

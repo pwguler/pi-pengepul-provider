@@ -57,10 +57,11 @@ describe("catalogIdForms", () => {
 
 describe("modelsFromApiResponse", () => {
   test("leaves out the batch routes OpenRouter refuses on this wire", () => {
-    // The relay lists them, and OpenRouter answers every one with 404 "This
-    // model is only available through the Batch API" - measured on anthropic,
-    // openai and Qwen batch ids alike. A picker entry that can only fail is
-    // worse than no entry. The `:free` variants answer 200 and stay.
+    // The relay lists them, and OpenRouter refuses them with 404 "This model is
+    // only available through the Batch API" - confirmed on 10 of the relay's 77
+    // batch ids across anthropic, openai, qwen, deepseek and z-ai. A picker
+    // entry that can only fail is worse than no entry. The `:free` variants
+    // answer 200 and stay.
     const body = {
       object: "list",
       data: [
@@ -300,12 +301,7 @@ describe("modelsFromApiResponse", () => {
     };
 
     const bare = modelsFromApiResponse(body, () => undefined);
-    expect(bare[0]?.thinkingLevelMap).toEqual({
-      off: null,
-      minimal: null,
-      xhigh: "xhigh",
-      max: "max",
-    });
+    expect(bare[0]?.thinkingLevelMap).toEqual({ off: null, minimal: null, max: "max" });
 
     const lookup: BuiltinModelLookup = (id) =>
       id.slice(id.lastIndexOf("/") + 1) === "deepseek-v4.1-flash"
@@ -329,12 +325,13 @@ describe("modelsFromApiResponse", () => {
     });
   });
 
-  test("an id no catalog carries reaches the relay's full effort enum", () => {
+  test("an id no catalog carries reaches the top of the relay's scale", () => {
     // pi hides xhigh and max unless a model's map names them, so a relay-only
-    // id dropped to low/medium/high and could never send the top of the
-    // scale. The relay validates one vocabulary for every upstream family it
-    // serves, so the fallback is per namespace, not per model: measured, all
-    // of these accept low|medium|high|xhigh|max and 400 on minimal.
+    // id dropped to low/medium/high and could never send the top of the scale.
+    // The relay validates one vocabulary for every upstream family it serves,
+    // so the fallback is per namespace, not per model. Only `max` is named:
+    // DeepSeek folds xhigh into high and pi's deepseek catalog hides xhigh
+    // outright, so naming it would offer a level that does nothing.
     const body = {
       object: "list",
       data: [
@@ -356,12 +353,7 @@ describe("modelsFromApiResponse", () => {
     const models = modelsFromApiResponse(body, () => undefined);
     for (const model of models) {
       // low/medium/high stay absent, so pi keeps its default mapping for them.
-      expect(model.thinkingLevelMap).toEqual({
-        off: null,
-        minimal: null,
-        xhigh: "xhigh",
-        max: "max",
-      });
+      expect(model.thinkingLevelMap).toEqual({ off: null, minimal: null, max: "max" });
     }
   });
 
