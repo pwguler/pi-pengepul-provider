@@ -210,6 +210,36 @@ function optionalRate(value: unknown): number | undefined {
 }
 
 /**
+ * Extended effort levels for an id no pi catalog carries, on the one relay
+ * namespace where that vocabulary has been measured.
+ *
+ * pi hides `xhigh` and `max` unless a model's map names them, so a relay-only
+ * id dropped to low/medium/high and could never send the top of the scale. At
+ * the time of writing that is seven of the relay's 352 reasoning
+ * openai-completions ids, across deepseek, Qwen, google and claude alike.
+ *
+ * Measured against the running relay: on `commandcode/` ids every requested
+ * effort except `minimal` is accepted, and one error text — the relay's own
+ * enum — answers all eight upstream families, so the vocabulary belongs to the
+ * relay rather than to any one model. `minimal` 400s, and the overlay below
+ * nulls it. The standard low/medium/high levels keep pi's default mapping,
+ * which is what the upstream aliases per its own docs.
+ *
+ * `openrouter/` ids are left alone: the relay resolves their account before
+ * validating effort (503 here), so nothing there is measured, and pi's own
+ * openrouter catalog still advertises `xhigh` without `max`.
+ */
+function fallbackLevelMap(id: string): Record<string, string | null> | undefined {
+  return id.toLowerCase().startsWith("commandcode/") ? { xhigh: "xhigh", max: "max" } : undefined
+}
+
+interface ResolvedMeta {
+  meta: BuiltinModelMeta
+  /** False when no pi catalog carries the id, so the metadata is heuristic. */
+  fromCatalog: boolean
+}
+
+/**
  * Resolve a model's metadata, most trustworthy source first:
  *   1. what pengepul advertises (first-party for this relay),
  *   2. pi's builtin catalogs for the id (the same id upstream),
@@ -222,10 +252,11 @@ function metaFor(
   id: string,
   dialect: PengepulDialect,
   lookup: BuiltinModelLookup | undefined,
-): BuiltinModelMeta {
-  const base = lookup?.(id, dialect) ?? heuristicMeta(id)
+): ResolvedMeta {
+  const known = lookup?.(id, dialect)
+  const base = known ?? heuristicMeta(id)
   const relay = metaFromRelayEntry(entry)
-  return relay ? { ...base, ...relay } : base
+  return { meta: relay ? { ...base, ...relay } : base, fromCatalog: known !== undefined }
 }
 
 function toPengepulModel(
@@ -234,7 +265,7 @@ function toPengepulModel(
 ): PengepulModel {
   const id = stringField(entry, "id")
   const dialect = dialectForModelId(id)
-  const meta = metaFor(entry, id, dialect, lookup)
+  const { meta, fromCatalog } = metaFor(entry, id, dialect, lookup)
   const ownedBy = entry["owned_by"]
 
   // A model the relay tags `anthropic` is Claude-family, hence reasoning-
@@ -251,10 +282,13 @@ function toPengepulModel(
   // replace: inherited nulls keep their levels hidden. The Messages dialect
   // needs none of this: it folds `minimal` into `low` and already nulls `off`
   // via forceAdaptiveThinking.
-  const thinkingLevelMap = relaySafeLevelMap(
-    meta.thinkingLevelMap,
-    reasoning && dialect === "openai-completions",
-  )
+  const enforceRelayEnum = reasoning && dialect === "openai-completions"
+  // A catalog that carries the id has already answered the level question,
+  // even when the answer is "provider default"; only a miss leaves room for
+  // the namespace fallback, and only where the relay's enum governs the wire.
+  const inherited = meta.thinkingLevelMap ??
+    (!fromCatalog && enforceRelayEnum ? fallbackLevelMap(id) : undefined)
+  const thinkingLevelMap = relaySafeLevelMap(inherited, enforceRelayEnum)
 
   return {
     id,

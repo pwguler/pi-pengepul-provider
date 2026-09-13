@@ -231,8 +231,8 @@ describe("modelsFromApiResponse", () => {
     // The relay's reasoning_effort enum is low|medium|high|xhigh|max: it 400s
     // on `minimal`, and its thinking toggle never actually disables thinking,
     // so neither level may reach the Chat Completions wire. Overlaying nulls
-    // (not replacing) keeps inherited strings and inherited nulls intact; a
-    // missing map leaves low/medium/high, all accepted by the relay.
+    // (not replacing) keeps inherited strings and inherited nulls intact; an
+    // id no catalog carries gets the vendor scale instead of pi's default.
     const body = {
       object: "list",
       data: [
@@ -246,7 +246,12 @@ describe("modelsFromApiResponse", () => {
     };
 
     const bare = modelsFromApiResponse(body, () => undefined);
-    expect(bare[0]?.thinkingLevelMap).toEqual({ off: null, minimal: null });
+    expect(bare[0]?.thinkingLevelMap).toEqual({
+      off: null,
+      minimal: null,
+      xhigh: "xhigh",
+      max: "max",
+    });
 
     const lookup: BuiltinModelLookup = (id) =>
       id.slice(id.lastIndexOf("/") + 1) === "deepseek-v4.1-flash"
@@ -268,6 +273,72 @@ describe("modelsFromApiResponse", () => {
       high: "high",
       max: "max",
     });
+  });
+
+  test("an id no catalog carries reaches the relay's full effort enum", () => {
+    // pi hides xhigh and max unless a model's map names them, so a relay-only
+    // id dropped to low/medium/high and could never send the top of the
+    // scale. The relay validates one vocabulary for every upstream family it
+    // serves, so the fallback is per namespace, not per model: measured, all
+    // of these accept low|medium|high|xhigh|max and 400 on minimal.
+    const body = {
+      object: "list",
+      data: [
+        {
+          id: "commandcode/deepseek/deepseek-v4.1-flash",
+          object: "model",
+          owned_by: "commandcode",
+          reasoning: true,
+        },
+        {
+          id: "commandcode/Qwen/Qwen3.7-Flash",
+          object: "model",
+          owned_by: "commandcode",
+          reasoning: true,
+        },
+      ],
+    };
+
+    const models = modelsFromApiResponse(body, () => undefined);
+    for (const model of models) {
+      // low/medium/high stay absent, so pi keeps its default mapping for them.
+      expect(model.thinkingLevelMap).toEqual({
+        off: null,
+        minimal: null,
+        xhigh: "xhigh",
+        max: "max",
+      });
+    }
+  });
+
+  test("the fallback stays off known ids, other namespaces, and non-reasoning models", () => {
+    // An id pi's catalog does carry keeps that catalog's answer even when the
+    // answer is "provider default": a hit with no map must not grow one. The
+    // openrouter namespace is unmeasured — the relay resolves its account
+    // before validating effort — so it keeps pi's default too.
+    const body = {
+      object: "list",
+      data: [
+        { id: "commandcode/deepseek/deepseek-v4-flash", object: "model", owned_by: "commandcode", reasoning: true },
+        { id: "openrouter/google/gemini-3.8-flash", object: "model", owned_by: "openrouter", reasoning: true },
+        { id: "commandcode/Qwen/Qwen3.8-Max", object: "model", owned_by: "commandcode", reasoning: false },
+      ],
+    };
+    const lookup: BuiltinModelLookup = (id) =>
+      id.endsWith("/deepseek-v4-flash")
+        ? {
+            reasoning: true,
+            contextWindow: 1_000_000,
+            maxTokens: 384_000,
+            input: ["text"],
+            cost: { input: 0.44, output: 1.32, cacheRead: 0.014, cacheWrite: 0 },
+          }
+        : undefined;
+
+    const models = modelsFromApiResponse(body, lookup);
+    expect(models[0]?.thinkingLevelMap).toEqual({ off: null, minimal: null });
+    expect(models[1]?.thinkingLevelMap).toEqual({ off: null, minimal: null });
+    expect(models[2]?.thinkingLevelMap).toBeUndefined();
   });
 
   test("relay reasoning does not overlay the anthropic adaptive path", () => {
