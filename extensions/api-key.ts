@@ -1,52 +1,21 @@
 /**
- * Resolve pengepul's local API key.
+ * Read pengepul's own API key.
  *
  * pengepul authenticates every request with a static key from its config:
  * `~/.pengepul/config.yaml`, under `api-keys:` (the first is generated on first
  * run and is `sk-local-...`). Clients send it as `Authorization: Bearer <key>`
  * or `x-api-key: <key>`.
  *
- * Precedence: an explicit env override wins, then the config file. The config
- * read is injected so this module stays io-free and testable.
+ * This is the fallback for the machine that runs the relay itself: a client box
+ * configures the key in `auth.json`, which pi resolves and hands to the
+ * provider. Only extraction lives here, so the file read stays with the caller
+ * and this module stays io-free.
  */
 
-const DEFAULT_CONFIG_PATH = "~/.pengepul/config.yaml"
-
-export type ApiKeySource = "env" | "config" | "none"
-
-export interface ApiKeyResolution {
-  /** The resolved key, or undefined when none could be found. */
-  key?: string
-  source: ApiKeySource
-}
+export const DEFAULT_CONFIG_PATH = "~/.pengepul/config.yaml"
 
 export const API_KEY_ENV = "PENGEPUL_API_KEY"
 export const CONFIG_PATH_ENV = "PENGEPUL_CONFIG"
-
-/**
- * Resolve the key from an env map and a config-file reader.
- *
- * @param env          the environment (or a test substitution for it).
- * @param readConfig   reads a config file's text by path, or undefined when the
- *                     path is unwritable/absent. Injected to keep this pure.
- */
-export function resolveApiKey(
-  env: Record<string, string | undefined>,
-  readConfig: (path: string) => string | undefined,
-): ApiKeyResolution {
-  const envKey = env[API_KEY_ENV]
-  if (envKey && envKey.trim() !== "") return { key: envKey, source: "env" }
-
-  const configPath = env[CONFIG_PATH_ENV] ?? DEFAULT_CONFIG_PATH
-  const configText = readConfig(configPath)
-  if (configText === undefined) return { source: "none" }
-
-  const keys = extractApiKeys(configText)
-  const first = keys[0]
-  if (first) return { key: first, source: "config" }
-
-  return { source: "none" }
-}
 
 /**
  * Extract `api-keys:` entries from pengepul's YAML config, without a YAML

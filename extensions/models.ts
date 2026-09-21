@@ -20,10 +20,9 @@
  * The network/cache are injected so the catalog logic stays testable.
  */
 
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
-import { randomUUID } from "node:crypto"
-import { dirname } from "node:path"
+import { readFile } from "node:fs/promises"
 
+import { MODELS_TIMEOUT_MS_ENV } from "./config.ts"
 import { baseUrlForDialect, dialectForModelId } from "./dialect.ts"
 import type { PengepulDialect } from "./dialect.ts"
 
@@ -65,7 +64,7 @@ export interface BuiltinModelMeta {
  */
 export type BuiltinModelLookup = (id: string, dialect: PengepulDialect) => BuiltinModelMeta | undefined
 
-/** A pengepul model ready to become a pi `ProviderModelConfig`. */
+/** A pengepul model ready to become a pi model entry. */
 export interface PengepulModel {
   id: string
   name: string
@@ -79,12 +78,6 @@ export interface PengepulModel {
   thinkingLevelMap?: Record<string, string | null>
 }
 
-export interface PengepulModelSource {
-  models: readonly PengepulModel[]
-  /** "live" = fetched from the relay; "cache" = read from disk; "empty" = none. */
-  source: "live" | "cache" | "empty"
-  warning?: string
-}
 
 /** `anthropic/claude-opus-5` -> `claude-opus-5` (the id upstream actually serves). */
 export function bareId(id: string): string {
@@ -454,103 +447,160 @@ export function modelsFromApiResponse(
   return models
 }
 
-/** Map models to pi `ProviderModelConfig` entries. Pure. */
-export function toProviderModelConfigs(
+import type { Api, Model } from "@earendil-works/pi-ai"
+
+/** The pi-ai model shapes this provider serves: one per dialect the relay speaks. */
+export type PengepulModelEntry = Model<"anthropic-messages"> | Model<"openai-completions">
+
+/** The provider id every pengepul model is stamped with. */
+export const PENGEPUL_PROVIDER_ID = "pengepul"
+
+/** What every model carries regardless of wire: identity, pricing, and the limits. */
+function sharedModelFields(model: PengepulModel, relayBase: string) {
+  return {
+    id: model.id,
+    name: model.name,
+    provider: PENGEPUL_PROVIDER_ID,
+    baseUrl: baseUrlForDialect(relayBase, model.dialect),
+    reasoning: model.reasoning,
+    input: model.input,
+    cost: model.cost,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+  }
+}
+
+/**
+ * The relay's prompt-cache affinity pin, on both wires.
+ *
+ * The relay's conversation_key resolves `x-claude-code-session-id`, then
+ * `x-session-id`, then the body's `prompt_cache_key`, then a hash of the
+ * cacheable prefix. pi emits one of those headers only for the `openrouter`
+ * affinity format, and only when the send flag is set. Both auto-detected
+ * defaults are wrong here: openai-completions picks `openai` (session_id +
+ * x-client-request-id + x-session-affinity) and anthropic-messages picks
+ * nothing at all. The header is the cheaper and more explicit of the two
+ * signals and it outranks the body field, so the pin keeps a session's account
+ * stable by the relay's first rule rather than its third. Losing it costs a
+ * session that migrates between pooled accounts its whole prefix: the upstream
+ * cache is per account.
+ *
+ * Measured, not assumed — `test/affinity-wire.test.ts` dumps both bodies:
+ * openai-completions carries `prompt_cache_key: <sessionId>` (and
+ * `prompt_cache_retention: "24h"`) under PI_CACHE_RETENTION=long, so the body
+ * field alone would name the conversation; anthropic-messages carries no
+ * `prompt_cache_key` at all, and pi-ai hardcodes `x-session-affinity` there,
+ * which this relay does not read. Messages traffic therefore rests entirely on
+ * the relay's prefix fallback until a pi release honours
+ * `sessionAffinityFormat` on that dialect.
+ *
+ * The two dialects do not land at the same time. openai-completions honors
+ * `sessionAffinityFormat` in every released pi. anthropic-messages only reads it
+ * from the unreleased change on pi main (commit bbb61e34a), which is why the
+ * field is re-declared below rather than taken from `AnthropicMessagesCompat`:
+ * against pi-ai 0.85.1 the pin is inert, and the cost of an ignored header is
+ * zero. Pin now rather than later — the cost of forgetting is silently
+ * re-billed Claude prefixes.
+ */
+function affinityPin() {
+  return {
+    sendSessionAffinityHeaders: true as const,
+    sessionAffinityFormat: "openrouter" as const,
+  }
+}
+
+/**
+ * Anthropic compat as pi-ai 0.85.1 types it, plus the affinity format a later
+ * pi reads. Declared here so the pin does not depend on the host's pi-ai
+ * version; the field is optional, so a host that predates it ignores the value.
+ */
+type AnthropicCompat = NonNullable<Model<"anthropic-messages">["compat"]> & {
+  sessionAffinityFormat?: "openrouter"
+}
+
+/**
+ * Map the relay catalog to pi models, one base URL per dialect. Pure.
+ *
+ * The per-model `baseUrl` is the only place the dialect split can live: pi
+ * applies a base URL returned from `auth.resolve()` to every model at once
+ * (`models.js` `applyAuth`), so a provider-wide value would send Anthropic
+ * Messages traffic to `/v1` and Chat Completions traffic to the root.
+ */
+export function toPengepulModels(
   models: readonly PengepulModel[],
   relayBase: string,
-): Array<{
-  id: string
-  name: string
-  api: PengepulDialect
-  baseUrl: string
-  reasoning: boolean
-  input: ("text" | "image")[]
-  cost: {
-    input: number
-    output: number
-    cacheRead: number
-    cacheWrite: number
-  }
-  contextWindow: number
-  maxTokens: number
-  thinkingLevelMap?: Record<string, string | null>
-  compat?: {
-    forceAdaptiveThinking?: boolean
-    supportsLongCacheRetention?: boolean
-    sendSessionAffinityHeaders?: boolean
-    sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter"
-  }
-}> {
+): PengepulModelEntry[] {
   return models.map((model) => {
-    const adaptive = model.dialect === "anthropic-messages" && model.reasoning
-    // The 1h cache TTL is a Messages-dialect feature: `cache_control.ttl`
-    // has nowhere to go on the Chat Completions wire. Reasoning is not part
-    // of it — a non-reasoning Claude model caches the same way.
-    const longCacheRetention = model.dialect === "anthropic-messages"
+    const shared = sharedModelFields(model, relayBase)
+    if (model.dialect === "anthropic-messages") {
+      const adaptive = model.reasoning
+      return {
+        ...shared,
+        api: "anthropic-messages" as const,
+        // Inherited level mapping (e.g. deepseek {high:"high"}) flows through;
+        // adaptive Claude models additionally mark "off" unsupported so the
+        // stream omits thinking:{type:"disabled"} (upstream rejects it).
+        ...(model.thinkingLevelMap || adaptive
+          ? {
+              thinkingLevelMap: {
+                ...(model.thinkingLevelMap ?? {}),
+                ...(adaptive ? { off: null } : {}),
+              },
+            }
+          : {}),
+        // Reasoning-capable Claude models run on the adaptive-thinking wire:
+        // pi's streamSimple always passes thinkingEnabled:false when no level is
+        // selected, and the stream would send thinking:{type:"disabled"}, which
+        // the upstream rejects (400: "thinking.type.disabled is not supported
+        // for this model"). thinkingLevelMap.off = null marks "off" as
+        // unsupported so pi omits the thinking param entirely (server default
+        // = adaptive), and forceAdaptiveThinking routes an explicit level to
+        // {type:"adaptive"} + effort instead of budget_tokens.
+        //
+        // The 1h cache TTL is a Messages-dialect feature too: `cache_control.ttl`
+        // has nowhere to go on the Chat Completions wire. Reasoning is not part
+        // of it — a non-reasoning Claude model caches the same way.
+        compat: {
+          ...affinityPin(),
+          ...(adaptive ? { forceAdaptiveThinking: true as const } : {}),
+          supportsLongCacheRetention: true as const,
+        } satisfies AnthropicCompat,
+      }
+    }
+
     return {
-      id: model.id,
-      name: model.name,
-      api: model.dialect,
-      baseUrl: baseUrlForDialect(relayBase, model.dialect),
-      reasoning: model.reasoning,
-      input: model.input,
-      cost: model.cost,
-      contextWindow: model.contextWindow,
-      maxTokens: model.maxTokens,
-      // Inherited level mapping (e.g. deepseek {high:"high"}) flows through;
-      // adaptive Claude models additionally mark "off" unsupported so the
-      // stream omits thinking:{type:"disabled"} (upstream rejects it).
-      ...(model.thinkingLevelMap || adaptive
-        ? { thinkingLevelMap: { ...(model.thinkingLevelMap ?? {}), ...(adaptive ? { off: null } : {}) } }
-        : {}),
-      // Reasoning-capable Claude models run on the adaptive-thinking wire:
-      // pi's streamSimple always passes thinkingEnabled:false when no level is
-      // selected, and the stream would send thinking:{type:"disabled"}, which
-      // the upstream rejects (400: "thinking.type.disabled is not supported
-      // for this model"). thinkingLevelMap.off = null marks "off" as
-      // unsupported so pi omits the thinking param entirely (server default
-      // = adaptive), and forceAdaptiveThinking routes an explicit level to
-      // {type:"adaptive"} + effort instead of budget_tokens.
-      // Both dialects pin both fields, and that is why `compat` is
-      // unconditional. The relay's prompt-cache affinity key resolves in this
-      // order: `x-claude-code-session-id`, `x-session-id`, the body's
-      // `prompt_cache_key`, then a hash of the cacheable request prefix
-      // (app.rs `conversation_key`). pi emits `x-session-id` only for the
-      // `openrouter` affinity format, and only when the send flag is set;
-      // the auto-detected defaults are wrong here in both cases
-      // (openai-completions picks `openai`: session_id + x-client-request-id +
-      // x-session-affinity; anthropic-messages picks nothing). The header is
-      // the cheaper and more explicit of the two signals and it outranks the
-      // body field, so pinning it keeps a session's account stable by the
-      // relay's first rule rather than its third. Losing the pin costs a
-      // session that migrates between pooled accounts its whole prefix: the
-      // upstream cache is per account.
-      //
-      // Measured, not assumed — `test/affinity-wire.test.ts` dumps both bodies:
-      // openai-completions carries `prompt_cache_key: <sessionId>` (and
-      // `prompt_cache_retention: "24h"`) under PI_CACHE_RETENTION=long, so the
-      // body field alone would name the conversation; anthropic-messages
-      // carries no `prompt_cache_key` at all, and pi-ai hardcodes
-      // `x-session-affinity` there, which this relay does not read. Messages
-      // traffic therefore rests entirely on the relay's prefix fallback until
-      // a pi release honours `sessionAffinityFormat` on that dialect.
-      //
-      // The two dialects do not land at the same time. openai-completions
-      // honors `sessionAffinityFormat` in every released pi. anthropic-messages
-      // only reads it from the unreleased change on pi main (commit
-      // bbb61e34a); through pi-ai 0.85.1 that client hardcodes the header name
-      // `x-session-affinity`, which this relay does not read, so the Claude
-      // pin below is inert until pi ships it. Pin now rather than later: the
-      // cost of an ignored header is zero, and the cost of forgetting is
-      // silently re-billed Claude prefixes.
-      compat: {
-        ...(adaptive ? { forceAdaptiveThinking: true as const } : {}),
-        ...(longCacheRetention ? { supportsLongCacheRetention: true as const } : {}),
-        sendSessionAffinityHeaders: true as const,
-        sessionAffinityFormat: "openrouter" as const,
-      },
+      ...shared,
+      api: "openai-completions" as const,
+      ...(model.thinkingLevelMap ? { thinkingLevelMap: model.thinkingLevelMap } : {}),
+      compat: { ...affinityPin() },
     }
   })
+}
+
+/** Whether a stored pi model is one this provider published. */
+export function isPengepulModelEntry(model: Model<Api>): model is PengepulModelEntry {
+  return (
+    model.provider === PENGEPUL_PROVIDER_ID &&
+    (model.api === "anthropic-messages" || model.api === "openai-completions")
+  )
+}
+
+/**
+ * Re-derive every model's base URL from the base currently configured.
+ *
+ * pi's model store keeps whole models, baseUrl included, and replays them
+ * before the network phase. A relay that moved would otherwise be reached at
+ * its old address until a fetch succeeds — which never happens when the old
+ * address is gone.
+ */
+export function restampRelayBase(
+  models: readonly PengepulModelEntry[],
+  relayBase: string,
+): PengepulModelEntry[] {
+  return models.map((model) => ({
+    ...model,
+    baseUrl: baseUrlForDialect(relayBase, model.api),
+  }))
 }
 
 /** Picker label: the bare model part of a relay id, suffixed. `anthropic/claude-opus-5` -> `claude-opus-5 (pengepul)`. */
@@ -588,7 +638,7 @@ function configuredTimeoutMs(timeoutMs: number | undefined): number {
 }
 
 export function getModelsTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env["PENGEPUL_MODELS_TIMEOUT_MS"]
+  const raw = env[MODELS_TIMEOUT_MS_ENV]
   if (!raw) return DEFAULT_MODELS_TIMEOUT_MS
   const parsed = Number(raw)
   return configuredTimeoutMs(parsed)
@@ -674,7 +724,7 @@ export async function fetchPengepulModels(
         throw new Error(
           `pengepul rejected the API key (${
             response.status
-          }). Set PENGEPUL_API_KEY or check ~/.pengepul/config.yaml.`,
+          }). Run /login pengepul, or set the key in ~/.pi/agent/auth.json or PENGEPUL_API_KEY.`,
         )
       }
       if (!response.ok) {
@@ -779,67 +829,6 @@ export async function loadCachedPengepulModels(
     return await readCache(cachePath)
   } catch {
     return []
-  }
-}
-
-async function writeCache(cachePath: string, models: readonly PengepulModel[]): Promise<void> {
-  await mkdir(dirname(cachePath), { recursive: true })
-  // Unique per write: the runtime can issue two overlapping writes in one
-  // process (cache-first + background refresh), and a shared pid-keyed name
-  // would let the first rename remove the second's source mid-flight.
-  const temporaryPath = `${cachePath}.${process.pid}.${randomUUID()}.tmp`
-
-  try {
-    await writeFile(
-      temporaryPath,
-      `${JSON.stringify({ version: MODEL_CACHE_VERSION, models }, null, 2)}\n`,
-      { encoding: "utf-8", mode: 0o600 },
-    )
-    await rename(temporaryPath, cachePath)
-  } finally {
-    try {
-      await rm(temporaryPath, { force: true })
-    } catch {
-      // Best-effort cleanup must not hide the original cache write error.
-    }
-  }
-}
-
-export async function loadPengepulModels(
-  options: LoadModelsOptions,
-): Promise<PengepulModelSource> {
-  const cachePath = options.cachePath
-
-  try {
-    const models = await fetchPengepulModels(options)
-
-    try {
-      await writeCache(cachePath, models)
-      return { models, source: "live" }
-    } catch (error) {
-      return {
-        models,
-        source: "live",
-        warning: `Loaded the live pengepul model catalog but could not update ${cachePath}: ${errorMessage(error)}`,
-      }
-    }
-  } catch (liveError) {
-    if (options.signal?.aborted) throw abortError(options.signal.reason ?? liveError)
-
-    try {
-      const models = await readCache(cachePath)
-      return {
-        models,
-        source: "cache",
-        warning: `Could not refresh the pengepul model catalog (${errorMessage(liveError)}). Using the cached catalog from ${cachePath}.`,
-      }
-    } catch (cacheError) {
-      return {
-        models: [],
-        source: "empty",
-        warning: `Could not refresh the pengepul model catalog (${errorMessage(liveError)}), and no valid cached catalog is available at ${cachePath} (${errorMessage(cacheError)}). pengepul models will remain unavailable until the next startup refresh succeeds.`,
-      }
-    }
   }
 }
 

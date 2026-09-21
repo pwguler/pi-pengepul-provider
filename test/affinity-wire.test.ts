@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Context, Model } from "@earendil-works/pi-ai";
 
-import { modelsFromApiResponse, toProviderModelConfigs } from "../extensions/models.ts";
+import { modelsFromApiResponse, toPengepulModels } from "../extensions/models.ts";
 
 /**
  * Which cache-affinity signal pi actually puts on each dialect's wire.
@@ -84,25 +84,13 @@ describe("affinity signal on the wire", () => {
     messages: [{ role: "user", content: "reply exactly: pong", timestamp: Date.now() }],
   };
 
-  /** The production config for one model id, on this mock base URL. */
+  /** The production model for one id, on this mock base URL. */
   function wireModel(id: string) {
-    const [config] = toProviderModelConfigs(modelsFromApiResponse(API_BODY), baseUrl).filter(
+    const entry = toPengepulModels(modelsFromApiResponse(API_BODY), baseUrl).find(
       (candidate) => candidate.id === id,
     );
-    if (!config) throw new Error(`no config for ${id}`);
-    return {
-      id,
-      name: id,
-      api: config.api,
-      provider: "pengepul",
-      baseUrl: config.baseUrl,
-      reasoning: false,
-      input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 200_000,
-      maxTokens: 64_000,
-      compat: config.compat,
-    } as unknown as Model<"openai-completions">;
+    if (!entry) throw new Error(`no production model for ${id}`);
+    return entry;
   }
 
   async function send(id: string) {

@@ -4,12 +4,18 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { Provider } from "@earendil-works/pi-ai";
+
 import loadExtension from "../extensions/index.ts";
-import type { ProviderConfig } from "@earendil-works/pi-coding-agent";
+import type { PengepulApiKeyCredential } from "../extensions/provider.ts";
 
 /**
  * True end-to-end test: a local mock pengepul relay serves /v1/models, and the
- * real extension seam registers the provider with the discovered models.
+ * real extension seam registers a provider that pi then refreshes.
+ *
+ * The credential is what a user writes into auth.json: an API key plus the relay
+ * base. Nothing here sets an environment variable, which is the whole point of
+ * the rewrite — the env vars stay supported, but they are no longer required.
  */
 
 const MODELS_BODY = {
@@ -60,29 +66,49 @@ describe("pi-pengepul-provider end to end", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("registers the pengepul provider with discovered models", async () => {
-    process.env["PENGEPUL_BASE_URL"] = baseUrl;
-    process.env["PENGEPUL_MODELS_CACHE"] = join(dir, "pengepul-models.json");
-    process.env["PENGEPUL_API_KEY"] = "sk-local-e2e";
-    process.env["PENGEPUL_MODELS_TIMEOUT_MS"] = "3000";
-
-    const registered: Array<{ name: string; config: ProviderConfig }> = [];
+  test("registers a provider whose refresh discovers the relay catalog from the credential", async () => {
+    const registered: Provider[] = [];
 
     const fakePi = {
-      registerProvider: (name: string, config: ProviderConfig) =>
-        registered.push({ name, config }),
+      registerProvider: (provider: Provider) => registered.push(provider),
       on: () => {},
     } as never;
 
-    await loadExtension(fakePi);
+    loadExtension(fakePi);
 
-    // Expect at least the initial registration to carry the discovered models.
-    const registration = registered.find((r) => r.name === "pengepul");
-    expect(registration).toBeDefined();
-    const models = registration!.config.models ?? [];
-    expect(models.length).toBe(4);
+    const provider = registered.find((candidate) => candidate.id === "pengepul");
+    expect(provider).toBeDefined();
 
-    const claude = models.find((m) => m.id === "claude-sonnet-4-6");
+    // Registration alone must not touch the relay: discovery is pi's to drive.
+    expect(received["path"]).toBeUndefined();
+    expect(provider!.getModels()).toHaveLength(0);
+
+    const persisted: unknown[] = [];
+    const credential: PengepulApiKeyCredential = {
+      type: "api_key",
+      key: "sk-local-e2e",
+      baseUrl,
+    };
+    await provider!.refreshModels!({
+      credential,
+      allowNetwork: true,
+      signal: new AbortController().signal,
+      publish: async (publication) => {
+        publication.update?.();
+        if (publication.persist) persisted.push(publication.persist);
+        return true;
+      },
+    });
+
+    const models = provider!.getModels();
+    expect(models.map((model) => model.id)).toEqual([
+      "claude-sonnet-4-6",
+      "claude-opus-5",
+      "gpt-5.4",
+      "commandcode/deepseek/deepseek-v4-pro",
+    ]);
+
+    const claude = models.find((model) => model.id === "claude-sonnet-4-6");
     expect(claude?.api).toBe("anthropic-messages");
     expect(claude?.baseUrl).toBe(baseUrl);
     // Metadata is inherited from pi's builtin catalog through the seam:
@@ -90,7 +116,7 @@ describe("pi-pengepul-provider end to end", () => {
     expect(claude?.contextWindow).toBe(1_000_000);
     expect(claude?.input).toContain("image");
 
-    const gpt = models.find((m) => m.id === "gpt-5.4");
+    const gpt = models.find((model) => model.id === "gpt-5.4");
     expect(gpt?.api).toBe("openai-completions");
     expect(gpt?.baseUrl).toBe(`${baseUrl}/v1`);
 
@@ -98,18 +124,15 @@ describe("pi-pengepul-provider end to end", () => {
     // the mock relay sends no pricing, and the heuristic path prices every
     // unknown model at zero, so a nonzero input rate can only come from the
     // deepseek catalog's entry for it.
-    const deepseek = models.find((m) => m.id === "commandcode/deepseek/deepseek-v4-pro");
+    const deepseek = models.find((model) => model.id === "commandcode/deepseek/deepseek-v4-pro");
     expect(deepseek?.cost.input).toBeGreaterThan(0);
     expect(deepseek?.api).toBe("openai-completions");
 
-    // Model discovery used the configured API key.
+    // Catalog fetch used the credential's key and base.
     expect(received["path"]).toBe("/v1/models");
     expect(received["x-api-key"]).toBe("sk-local-e2e");
 
-    // Clean up env so we don't leak into other tests.
-    delete process.env["PENGEPUL_BASE_URL"];
-    delete process.env["PENGEPUL_MODELS_CACHE"];
-    delete process.env["PENGEPUL_API_KEY"];
-    delete process.env["PENGEPUL_MODELS_TIMEOUT_MS"];
+    // The catalog is persisted for the next start, cache phase included.
+    expect(persisted).toHaveLength(1);
   }, 10_000);
 });

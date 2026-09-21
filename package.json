@@ -1,8 +1,8 @@
 {
   "name": "@pwguler/pi-pengepul-provider",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "type": "module",
-  "description": "pi custom provider for pengepul, a local relay that pools your Claude/Codex subscriptions. Connects pi to http://127.0.0.1:8317 over the native Anthropic Messages and OpenAI Chat Completions wires.",
+  "description": "pi custom provider for pengepul, a relay that pools your Claude/Codex subscriptions. Key and relay base live in auth.json; both native wires (Anthropic Messages, OpenAI Chat Completions) come from one catalog.",
   "license": "MIT",
   "author": "pwguler",
   "repository": {

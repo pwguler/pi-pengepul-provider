@@ -13,14 +13,32 @@ import {
   bareId,
   catalogIdForms,
   fetchPengepulModels,
-  loadPengepulModels,
+  loadCachedPengepulModels,
   modelsFromApiResponse,
   modelsFromCache,
-  toProviderModelConfigs,
+  restampRelayBase,
+  toPengepulModels,
   type BuiltinModelLookup,
   type BuiltinModelMeta,
   type PengepulModel,
+  type PengepulModelEntry,
 } from "../extensions/models.ts";
+
+/** Narrow a mapped catalog entry to one wire, so its compat fields type-check. */
+function onWire(
+  entries: readonly PengepulModelEntry[],
+  id: string,
+  api: "anthropic-messages",
+): Extract<PengepulModelEntry, { api: "anthropic-messages" }> | undefined;
+function onWire(
+  entries: readonly PengepulModelEntry[],
+  id: string,
+  api: "openai-completions",
+): Extract<PengepulModelEntry, { api: "openai-completions" }> | undefined;
+function onWire(entries: readonly PengepulModelEntry[], id: string, api: string) {
+  const found = entries.find((entry) => entry.id === id);
+  return found?.api === api ? found : undefined;
+}
 
 const API_BODY = {
   object: "list",
@@ -637,31 +655,48 @@ describe("modelsFromApiResponse", () => {
   });
 });
 
-describe("toProviderModelConfigs", () => {
+describe("toPengepulModels", () => {
   test("assigns per-model base URL matching its dialect", () => {
     const models = modelsFromApiResponse(API_BODY);
-    const configs = toProviderModelConfigs(models, "http://127.0.0.1:8317");
-    const claude = configs.find((c) => c.id === "claude-sonnet-4-6");
-    const gpt = configs.find((c) => c.id === "gpt-5.4");
+    const entries = toPengepulModels(models, "http://127.0.0.1:8317");
+    const claude = onWire(entries, "claude-sonnet-4-6", "anthropic-messages");
+    const gpt = onWire(entries, "gpt-5.4", "openai-completions");
 
-    expect(claude?.api).toBe("anthropic-messages");
     expect(claude?.baseUrl).toBe("http://127.0.0.1:8317");
+    expect(gpt?.baseUrl).toBe("http://127.0.0.1:8317/v1");
+  });
 
-    expect(gpt?.api).toBe("openai-completions");
+  test("stamps the provider id pi needs to route the model back", () => {
+    const entries = toPengepulModels(modelsFromApiResponse(API_BODY), "http://127.0.0.1:8317");
+    expect(entries.map((entry) => entry.provider)).toEqual([
+      "pengepul",
+      "pengepul",
+      "pengepul",
+    ]);
+  });
+
+  test("accepts a relay base that already ends in /v1 without doubling it", () => {
+    const entries = toPengepulModels(modelsFromApiResponse(API_BODY), "http://127.0.0.1:8317/v1");
+    const claude = onWire(entries, "claude-sonnet-4-6", "anthropic-messages");
+    const gpt = onWire(entries, "gpt-5.4", "openai-completions");
+
+    expect(claude?.baseUrl).toBe("http://127.0.0.1:8317");
     expect(gpt?.baseUrl).toBe("http://127.0.0.1:8317/v1");
   });
 
   test("reasoning Claude models force adaptive thinking; OpenAI models do not", () => {
     const models = modelsFromApiResponse(API_BODY);
-    const configs = toProviderModelConfigs(models, "http://127.0.0.1:8317");
-    const claude = configs.find((c) => c.id === "claude-sonnet-4-6");
-    const gpt = configs.find((c) => c.id === "gpt-5.4");
+    const entries = toPengepulModels(models, "http://127.0.0.1:8317");
+    const claude = onWire(entries, "claude-sonnet-4-6", "anthropic-messages");
+    const gpt = onWire(entries, "gpt-5.4", "openai-completions");
 
     expect(claude?.compat?.forceAdaptiveThinking).toBe(true);
     // "off" marked unsupported so pi omits the thinking param entirely —
     // the upstream rejects thinking:{type:"disabled"}.
     expect(claude?.thinkingLevelMap?.off).toBe(null);
-    expect(gpt?.compat?.forceAdaptiveThinking).toBeUndefined();
+    // Asserted by key rather than by property: forceAdaptiveThinking is an
+    // Anthropic-only compat field, so the OpenAI branch has no member to read.
+    expect(Object.keys(gpt?.compat ?? {})).not.toContain("forceAdaptiveThinking");
   });
 
   test("Anthropic models declare long cache retention; OpenAI models do not", () => {
@@ -669,9 +704,9 @@ describe("toProviderModelConfigs", () => {
     // openai-completions model carrying the flag would emit a ttl the
     // Chat Completions wire has nowhere to put.
     const models = modelsFromApiResponse(API_BODY);
-    const configs = toProviderModelConfigs(models, "http://127.0.0.1:8317");
-    const claude = configs.find((c) => c.id === "claude-sonnet-4-6");
-    const gpt = configs.find((c) => c.id === "gpt-5.4");
+    const entries = toPengepulModels(models, "http://127.0.0.1:8317");
+    const claude = onWire(entries, "claude-sonnet-4-6", "anthropic-messages");
+    const gpt = onWire(entries, "gpt-5.4", "openai-completions");
 
     expect(claude?.compat?.supportsLongCacheRetention).toBe(true);
     expect(gpt?.compat?.supportsLongCacheRetention).toBeUndefined();
@@ -690,14 +725,19 @@ describe("toProviderModelConfigs", () => {
     // on the relay's first rule rather than its third, on both dialects.
     // `test/affinity-wire.test.ts` measures what each dialect actually emits.
     const models = modelsFromApiResponse(API_BODY);
-    const configs = toProviderModelConfigs(models, "http://127.0.0.1:8317");
-    const claude = configs.find((c) => c.id === "claude-sonnet-4-6");
-    const gpt = configs.find((c) => c.id === "gpt-5.4");
+    const entries = toPengepulModels(models, "http://127.0.0.1:8317");
+    const claude = onWire(entries, "claude-sonnet-4-6", "anthropic-messages");
+    const gpt = onWire(entries, "gpt-5.4", "openai-completions");
 
     expect(gpt?.compat?.sendSessionAffinityHeaders).toBe(true);
     expect(gpt?.compat?.sessionAffinityFormat).toBe("openrouter");
     expect(claude?.compat?.sendSessionAffinityHeaders).toBe(true);
-    expect(claude?.compat?.sessionAffinityFormat).toBe("openrouter");
+    // Read by key: against pi-ai 0.85.1 the field is not on
+    // AnthropicMessagesCompat yet, and the pin deliberately sets it anyway.
+    expect(Object.entries(claude?.compat ?? {})).toContainEqual([
+      "sessionAffinityFormat",
+      "openrouter",
+    ]);
   });
 
   test("picker label strips the relay prefix; the id stays exact", () => {
@@ -707,9 +747,46 @@ describe("toProviderModelConfigs", () => {
       object: "list",
       data: [{ id: "openrouter/openai/gpt-5.4", object: "model", owned_by: "openrouter" }],
     });
-    const configs = toProviderModelConfigs(models, "http://127.0.0.1:8317");
-    expect(configs[0]?.name).toBe("openai/gpt-5.4 (pengepul)");
-    expect(configs[0]?.id).toBe("openrouter/openai/gpt-5.4");
+    const entries = toPengepulModels(models, "http://127.0.0.1:8317");
+    expect(entries[0]?.name).toBe("openai/gpt-5.4 (pengepul)");
+    expect(entries[0]?.id).toBe("openrouter/openai/gpt-5.4");
+  });
+});
+
+describe("restampRelayBase", () => {
+  test("re-points every model at a moved relay, per dialect", () => {
+    // pi's model store keeps whole models, baseUrl included. Restoring them
+    // verbatim after the relay moved would send requests to the old host until
+    // the next successful fetch, which never comes when the old host is gone.
+    const stored = toPengepulModels(modelsFromApiResponse(API_BODY), "http://127.0.0.1:8317");
+    const moved = restampRelayBase(stored, "http://10.10.1.100:8317");
+
+    const claude = onWire(moved, "claude-sonnet-4-6", "anthropic-messages");
+    const gpt = onWire(moved, "gpt-5.4", "openai-completions");
+    expect(claude?.baseUrl).toBe("http://10.10.1.100:8317");
+    expect(gpt?.baseUrl).toBe("http://10.10.1.100:8317/v1");
+  });
+
+  test("leaves metadata untouched and does not mutate the stored entries", () => {
+    const stored = toPengepulModels(modelsFromApiResponse(API_BODY), "http://127.0.0.1:8317");
+    const before = structuredClone(stored);
+    const moved = restampRelayBase(stored, "http://10.10.1.100:8317");
+
+    expect(stored).toEqual(before);
+    expect(moved.map((entry) => entry.id)).toEqual(before.map((entry) => entry.id));
+    expect(moved.map((entry) => entry.cost)).toEqual(before.map((entry) => entry.cost));
+    expect(moved.map((entry) => entry.contextWindow)).toEqual(
+      before.map((entry) => entry.contextWindow),
+    );
+    expect(moved[0]?.compat).toEqual(before[0]?.compat);
+  });
+
+  test("normalizes a trailing /v1 on the new base", () => {
+    const stored = toPengepulModels(modelsFromApiResponse(API_BODY), "http://127.0.0.1:8317");
+    const moved = restampRelayBase(stored, "http://10.10.1.100:8317/v1");
+    expect(onWire(moved, "gpt-5.4", "openai-completions")?.baseUrl).toBe(
+      "http://10.10.1.100:8317/v1",
+    );
   });
 });
 
@@ -821,7 +898,7 @@ describe("fetchPengepulModels", () => {
   });
 });
 
-describe("loadPengepulModels", () => {
+describe("loadCachedPengepulModels", () => {
   let dir: string;
 
   beforeEach(() => {
@@ -831,55 +908,22 @@ describe("loadPengepulModels", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("returns a live source and writes the cache on success", async () => {
+  test("reads a pre-0.3 cache file so an upgrade does not start blind", () => {
     const cachePath = join(dir, "pengepul-models.json");
-    const fetchImpl = mockFetch(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => API_BODY,
-    }));
-    const result = await loadPengepulModels({
-      url: "http://127.0.0.1:8317/v1/models",
-      cachePath,
-      relayBase: "http://127.0.0.1:8317",
-      fetchImpl,
-    });
-    expect(result.source).toBe("live");
-    expect(result.models).toHaveLength(3);
-    expect(result.warning).toBeUndefined();
-  });
-
-  test("falls back to the cache to cover a briefly absent relay", async () => {
-    const cachePath = join(dir, "pengepul-models.json");
-    const cached: PengepulModel = {
-      id: "claude-opus-5",
-      name: "claude-opus-5 (pengepul)",
-      dialect: "anthropic-messages",
-      reasoning: true,
-      input: ["text", "image"],
-      cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-      contextWindow: 1000000,
-      maxTokens: 128000,
-    };
     writeFileSync(
       cachePath,
-      JSON.stringify({ version: 6, models: [cached] }, null, 2) + "\n",
+      JSON.stringify({ version: 6, models: modelsFromApiResponse(API_BODY) }),
       { mode: 0o600 },
     );
+    return expect(loadCachedPengepulModels(cachePath)).resolves.toHaveLength(3);
+  });
 
-    const failedFetch = mockFetch(async () => {
-      throw new Error("connection refused");
-    });
-    const result = await loadPengepulModels({
-      url: "http://127.0.0.1:8317/v1/models",
-      cachePath,
-      relayBase: "http://127.0.0.1:8317",
-      fetchImpl: failedFetch,
-    });
+  test("reads nothing when the file is missing or unusable", async () => {
+    expect(await loadCachedPengepulModels(join(dir, "absent.json"))).toEqual([]);
 
-    expect(result.source).toBe("cache");
-    expect(result.warning).toContain("cache");
-    expect(result.models).toHaveLength(1);
-    expect(result.models[0]?.id).toBe("claude-opus-5");
+    const cachePath = join(dir, "garbage.json");
+    writeFileSync(cachePath, "not json", { mode: 0o600 });
+    expect(await loadCachedPengepulModels(cachePath)).toEqual([]);
   });
 });
+

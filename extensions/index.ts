@@ -1,31 +1,24 @@
 /**
  * @pwguler/pi-pengepul-provider entry point - the real edge adapter.
  *
- * Registers pengepul as a pi custom provider. pengepul is a local relay
- * (`http://127.0.0.1:8317`) that pools your Claude/Codex subscriptions and
- * speaks both native wires. The pure core lives in `./dialect.ts`, `./models.ts`
- * and `./runtime.ts`; this file adapts them to the pi ExtensionAPI seam.
+ * Registers pengepul as a pi provider. pengepul is a relay that pools your
+ * Claude/Codex subscriptions and speaks both native wires. The provider itself
+ * lives in `./provider.ts`: pi resolves auth through it and hands the credential
+ * back on every refresh, so `auth.json` carries the key and the relay base. The
+ * pure core is `./credential.ts`, `./dialect.ts`, and `./models.ts`; this file
+ * adapts them to the pi ExtensionAPI seam and reads the one file pi cannot.
  */
 
 import {
   getAgentDir,
   type ExtensionAPI,
-  type ProviderConfig,
 } from "@earendil-works/pi-coding-agent"
 import { getBuiltinModel, getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all"
 import { readFileSync } from "node:fs"
 
-import { resolveApiKey } from "./api-key.ts"
 import { resolveSettings } from "./config.ts"
-import { modelsUrl } from "./dialect.ts"
-import {
-  catalogIdForms,
-  loadCachedPengepulModels,
-  loadPengepulModels,
-  toProviderModelConfigs,
-  type PengepulModel,
-} from "./models.ts"
-import { createPengepulRuntime } from "./runtime.ts"
+import { catalogIdForms, type PengepulModel } from "./models.ts"
+import { createPengepulProvider } from "./provider.ts"
 
 function expandHome(path: string): string {
   if (path === "~") return process.env.HOME ?? path
@@ -93,49 +86,24 @@ function createBuiltinLookup(): (id: string, dialect: string) => ReturnType<type
   }
 }
 
-function createProviderConfigFactory(relayBase: string, apiKey: string | undefined) {
-  return (models: readonly PengepulModel[]): ProviderConfig => ({
-    name: "Pengepul",
-    baseUrl: relayBase,
-    apiKey: apiKey ?? "$PENGEPUL_API_KEY",
-    api: "anthropic-messages",
-    models: toProviderModelConfigs(models, relayBase),
-  })
-}
-
 /**
- * Model discovery and provider registration are async: the relay's catalog is
- * fetched live (and cached), so the runtime handles the cache-first, then
- * live-refresh dance. The config factory pins the base URL and key once.
+ * Model discovery belongs to pi: it calls `refreshModels` with the resolved
+ * credential, first against pi's cached catalog and then, when the network is
+ * allowed, against the relay. Registration is synchronous; nothing here waits
+ * on the relay, and the catalog survives a restart through pi's model store.
  */
-export default async function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI) {
   const settings = resolveSettings(process.env, getAgentDir())
-  const apiKey = resolveApiKey(process.env, readConfigText).key
 
-  // The relay advertises only ids; context/pricing/modality numbers come from
-  // pi's builtin catalogs, searched across providers until one knows the id
-  // (aggregator, vendor, and last-segment shapes). The lookup is injected so
-  // the catalog logic stays free of pi-ai imports.
-  const lookupBuiltin = createBuiltinLookup()
-
-  const runtime = createPengepulRuntime(pi, {
-    loadModels: (signal) =>
-      loadPengepulModels({
-        url: modelsUrl(settings.relayBase),
-        apiKey,
-        cachePath: settings.modelsCachePath,
-        relayBase: settings.relayBase,
-        timeoutMs: settings.modelsTimeoutMs,
-        lookupBuiltin,
-        signal,
-      }),
-    loadCachedModels: () => loadCachedPengepulModels(settings.modelsCachePath),
-    createProviderConfig: createProviderConfigFactory(settings.relayBase, apiKey),
+  const provider = createPengepulProvider({
+    env: process.env,
+    configText: readConfigText(settings.configPath),
+    legacyCachePath: settings.legacyCachePath,
+    lookupBuiltin: createBuiltinLookup(),
   })
 
-  pi.on("session_shutdown", () => {
-    runtime.dispose()
-  })
-
-  await runtime.initialize()
+  pi.registerProvider(provider)
 }
+
+/** The pengepul catalog shape, re-exported for callers that build on the core. */
+export type { PengepulModel }

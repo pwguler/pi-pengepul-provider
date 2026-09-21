@@ -41,8 +41,8 @@ prefixed `pengepul/<id>`. To try it without installing, use
 
 ## What it does
 
-- Registers the `pengepul` provider against your relay's base URL
-  (`http://127.0.0.1:8317` by default).
+- Registers the `pengepul` provider against the relay base URL on your
+  credential (`http://127.0.0.1:8317` by default).
 - Discovers models from `GET /v1/models`, maps each to the right wire:
   - `claude-*` / `anthropic/*` and `owned_by: anthropic` → Anthropic Messages
     (`POST /v1/messages`),
@@ -53,24 +53,55 @@ prefixed `pengepul/<id>`. To try it without installing, use
   `max_output_tokens`, `input_modalities`, `pricing`). Fields the relay omits
   fall back to pi's builtin catalog for the same id, then to family
   heuristics.
-- Caches the last successful catalog at `<agent-dir>/pengepul-models.json`, so
-  startup does not wait on the network and a briefly absent relay is covered.
+- Caches the catalog in pi's model store, so startup does not wait on the
+  network and a briefly absent relay is covered. The cached models are
+  re-pointed at the relay base configured now, so moving the relay does not
+  leave requests aimed at the old address.
 - Reuses pi's built-in stream functions for both wires — no custom transport.
-- Registers no commands: the catalog refreshes on every startup.
+- Registers no commands: pi refreshes the catalog on every startup.
 
 ## Configuration
 
+Everything lives in `~/.pi/agent/auth.json`: the relay's API key and the relay
+base it applies to.
+
+```json
+{
+  "pengepul": {
+    "type": "api_key",
+    "key": "sk-local-...",
+    "baseUrl": "http://127.0.0.1:8317"
+  }
+}
+```
+
+`/login pengepul` writes both fields for you — it asks for the key, then for the
+relay URL, and defaults the URL to `http://127.0.0.1:8317`. Editing the file by
+hand works the same way; `baseUrl` may end in `/v1` or not.
+
+To reach a relay on another machine, put that machine's address in `baseUrl`
+(and make the relay listen beyond loopback there: `host: 0.0.0.0` in
+`~/.pengepul/config.yaml` on the relay, or forward the port over SSH). The key
+is the relay's own key — `pengepul config api-key` prints it.
+
+Optional overrides, for CI or a one-off shell. Each is a fallback: the
+credential wins when it carries a value.
+
 | Setting | Env var | Default |
 |---|---|---|
-| Relay base URL | `PENGEPUL_BASE_URL` | `http://127.0.0.1:8317` |
-| API key | `PENGEPUL_API_KEY` | read from `~/.pengepul/config.yaml` |
+| Relay base URL | `PENGEPUL_BASE_URL` | `http://127.0.0.1:8317`, or the relay's own `config.yaml` |
+| API key | `PENGEPUL_API_KEY` | `api-keys[0]` in `~/.pengepul/config.yaml` |
 | Config path | `PENGEPUL_CONFIG` | `~/.pengepul/config.yaml` |
-| Model cache path | `PENGEPUL_MODELS_CACHE` | `<agent-dir>/pengepul-models.json` |
+| Legacy cache path | `PENGEPUL_MODELS_CACHE` | `<agent-dir>/pengepul-models.json` |
 | Discovery timeout | `PENGEPUL_MODELS_TIMEOUT_MS` | `10000` |
 
-The API key is read from `~/.pengepul/config.yaml` (`api-keys[0]`, the
-`sk-local-...` key pengepul generates on first run) unless `PENGEPUL_API_KEY`
-is set.
+`PENGEPUL_MODELS_CACHE` names the pre-0.3 cache file. It is read once, when pi's
+model store has no pengepul catalog yet, and never written again.
+
+Do not set `providers.pengepul.baseUrl` in `models.json`. pi applies that value
+to every model of the provider, which collapses the two wires onto one URL —
+Anthropic Messages traffic would be sent to `/v1` and Chat Completions traffic
+to `/`.
 
 ## Notes
 
@@ -81,7 +112,9 @@ is set.
   pengepul bills against — displayed costs are upstream list prices.
 - The relay must be running and reachable for discovery to succeed. Without a
   cached catalog on a first start, pengepul models stay unavailable until a
-  start with the relay up.
+  start with the relay up. A relay that answers with 401 leaves the last known
+  catalog registered and logs a warning; discovery does not take pi down with
+  it.
 
 ## Development
 

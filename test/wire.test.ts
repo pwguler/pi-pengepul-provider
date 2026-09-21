@@ -4,16 +4,26 @@ import { createServer, type Server } from "node:http";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessageEventStream, Context, Model } from "@earendil-works/pi-ai";
 
-import { modelsFromApiResponse, toProviderModelConfigs } from "../extensions/models.ts";
+import { modelsFromApiResponse, toPengepulModels } from "../extensions/models.ts";
 
 /**
  * Wire round trip: pi-ai's builtin stream functions, pointed at a mock pengepul
- * relay through this provider's model configs, must reach the right route and
+ * relay through the provider's own model mapping, must reach the right route and
  * parse the real SSE dialects.
  *
  * This is the proof that the dialect/baseUrl split works against the wires
- * pengepul actually serves — not just that the config shape looks right.
+ * pengepul actually serves — not just that the mapped shape looks right. The
+ * models come from `toPengepulModels`, so the compat flags under test are the
+ * ones production ships.
  */
+
+const API_BODY = {
+  object: "list",
+  data: [
+    { id: "claude-sonnet-4-6", object: "model", owned_by: "anthropic" },
+    { id: "gpt-5.4", object: "model", owned_by: "codex" },
+  ],
+};
 
 const OPENAI_SSE = [
   'data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-5.4","choices":[{"index":0,"delta":{"role":"assistant","content":"pong"},"finish_reason":null}]}',
@@ -68,18 +78,12 @@ describe("pengepul wire round trip", () => {
   });
 
   function model(api: "openai-completions" | "anthropic-messages", id: string): Model<typeof api> {
-    return {
-      id,
-      name: id,
-      api,
-      provider: "pengepul",
-      baseUrl: api === "openai-completions" ? `${baseUrl}/v1` : baseUrl,
-      reasoning: false,
-      input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 200_000,
-      maxTokens: 64_000,
-    } as unknown as Model<typeof api>;
+    const entry = toPengepulModels(modelsFromApiResponse(API_BODY), baseUrl).find(
+      (candidate) => candidate.id === id,
+    );
+    if (!entry) throw new Error(`no production model for ${id}`);
+    if (entry.api !== api) throw new Error(`${id} maps to ${entry.api}, not ${api}`);
+    return entry as Model<typeof api>;
   }
 
   const context: Context = {
@@ -131,23 +135,14 @@ describe("pengepul wire round trip", () => {
     // emits that header only for the openrouter affinity format, and the
     // detected default for a non-OpenRouter base URL is `openai` (session_id +
     // x-client-request-id + x-session-affinity) — a header set the relay
-    // ignores. This is the end-to-end proof the config pins both fields, so a
+    // ignores. This is the end-to-end proof the mapping pins both fields, so a
     // session that hops accounts mid-conversation keeps its cached prefix
     // instead of re-billing it.
-    const [config] = toProviderModelConfigs(
-      modelsFromApiResponse({
-        object: "list",
-        data: [{ id: "gpt-5.4", object: "model", owned_by: "codex" }],
-      }),
-      baseUrl,
-    );
-    const wireModel = {
-      ...model("openai-completions", "gpt-5.4"),
-      compat: config?.compat,
-    } as unknown as Model<"openai-completions">;
-
     await collect(
-      streamSimple(wireModel, context, { apiKey: "sk-local-e2e", sessionId: "sess-pengepul-1" }),
+      streamSimple(model("openai-completions", "gpt-5.4"), context, {
+        apiKey: "sk-local-e2e",
+        sessionId: "sess-pengepul-1",
+      }),
     );
 
     expect(lastRoute).toBe("/v1/chat/completions");
