@@ -422,6 +422,109 @@ describe("modelsFromApiResponse", () => {
     expect(models[2]?.thinkingLevelMap).toBeUndefined();
   });
 
+  test("an id the catalog has not caught up with takes its family's extended levels", () => {
+    // pi hides xhigh and max unless a model's map names them, and the relay
+    // advertises no effort metadata at all, so a Claude point release the relay
+    // already serves but pi's catalog does not carry drops to low/medium/high
+    // with no way to reach the top of a ladder its own family publishes: in the
+    // catalog Opus 4.5 names neither extension, 4.6 names max, and 4.7, 4.8 and
+    // 5 name xhigh and max. The previous minor is this id's answer, and it is
+    // the only evidence on hand - the relay has none, and no heuristic can
+    // speak for a level.
+    const body = {
+      object: "list",
+      data: [
+        { id: "anthropic/claude-opus-5-5", object: "model", owned_by: "anthropic" },
+        { id: "anthropic/claude-opus-4-8-20260101", object: "model", owned_by: "anthropic" },
+      ],
+    };
+    const previous: BuiltinModelMeta = {
+      reasoning: true,
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+      input: ["text", "image"],
+      cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+      thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" },
+    };
+    // A point release and a dated snapshot both strip to the id catalog carries.
+    const lookup: BuiltinModelLookup = (id) =>
+      id === "anthropic/claude-opus-5" || id === "anthropic/claude-opus-4-8"
+        ? previous
+        : undefined;
+
+    const models = modelsFromApiResponse(body, lookup);
+    // This layer decides levels only: `off: null` for the adaptive wire is
+    // added by toPengepulModels, and the sibling's nulls stay behind.
+    for (const model of models) {
+      expect(model.thinkingLevelMap).toEqual({ xhigh: "xhigh", max: "max" });
+    }
+  });
+
+  test("inheritance adds the named extension only, where a sibling answers", () => {
+    // Add-only by construction: the rule names levels the sibling maps to a
+    // string and touches nothing else, so an id that reaches it can gain the
+    // top of the scale but never lose a level that works today. The sibling's
+    // nulls are the sibling's business: `low` here stays absent, which leaves
+    // pi's default mapping in place, rather than being hidden.
+    const body = {
+      object: "list",
+      data: [
+        { id: "anthropic/claude-opus-5-5", object: "model", owned_by: "anthropic" },
+        { id: "anthropic/claude-opus", object: "model", owned_by: "anthropic" },
+        { id: "anthropic/claude-haiku-5", object: "model", owned_by: "anthropic" },
+        { id: "anthropic/claude-opus-5-preview", object: "model", owned_by: "anthropic" },
+        { id: "anthropic/claude-opus-9-9", object: "model", owned_by: "anthropic" },
+        { id: "commandcode/deepseek/deepseek-v9-2", object: "model", owned_by: "commandcode" },
+      ],
+    };
+    const known: BuiltinModelMeta = {
+      reasoning: true,
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      thinkingLevelMap: { off: null, low: null, medium: null, high: "high", xhigh: "xhigh" },
+    };
+    const lookup: BuiltinModelLookup = (id) =>
+      id === "anthropic/claude-opus-5" || id === "commandcode/deepseek/deepseek-v9"
+        ? known
+        : undefined;
+
+    const models = modelsFromApiResponse(body, lookup);
+    expect(models[0]?.thinkingLevelMap).toEqual({ xhigh: "xhigh" });
+    // No trailing version segment, a suffix that is not one, and a sibling the
+    // catalog does not carry all keep pi's default, which reaches `high`.
+    expect(models[1]?.thinkingLevelMap).toBeUndefined();
+    expect(models[2]?.thinkingLevelMap).toBeUndefined();
+    expect(models[3]?.thinkingLevelMap).toBeUndefined();
+    expect(models[4]?.thinkingLevelMap).toBeUndefined();
+    // Levels are reasoning-only: an id whose family names none gets no map,
+    // however its sibling is spelled.
+    expect(models[5]?.thinkingLevelMap).toBeUndefined();
+  });
+
+  test("a catalog hit is never re-pointed at a sibling", () => {
+    const body = {
+      object: "list",
+      data: [{ id: "anthropic/claude-opus-5-5", object: "model", owned_by: "anthropic" }],
+    };
+    const meta: BuiltinModelMeta = {
+      reasoning: true,
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    };
+    const lookup: BuiltinModelLookup = (id): BuiltinModelMeta | undefined =>
+      id === "anthropic/claude-opus-5-5"
+        ? { ...meta, thinkingLevelMap: { off: null, max: "max" } }
+        : { ...meta, thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" } };
+
+    const models = modelsFromApiResponse(body, lookup);
+    // The id's own entry wins, even when its sibling names more than it does.
+    expect(models[0]?.thinkingLevelMap).toEqual({ off: null, max: "max" });
+  });
+
   test("minimal is hidden only where the relay refuses it", () => {
     // Measured on the running relay: `commandcode/` answers 400 Invalid option:
     // expected one of "low"|"medium"|"high"|"xhigh"|"max" for minimal, while

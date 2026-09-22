@@ -53,6 +53,11 @@ prefixed `pengepul/<id>`. To try it without installing, use
   `max_output_tokens`, `input_modalities`, `pricing`). Fields the relay omits
   fall back to pi's builtin catalog for the same id, then to family
   heuristics.
+- Names the extended thinking levels (`xhigh`, `max`) that a model's own family
+  publishes. An id the catalogs have not caught up with — a point release the
+  relay already serves — takes them from the same family's previous minor, so
+  it does not sit at `high` until the next pi catalog update. Nothing to
+  configure: `thinkingLevelMap` is resolved per id here.
 - Caches the catalog in pi's model store, so startup does not wait on the
   network and a briefly absent relay is covered. The cached models are
   re-pointed at the relay base configured now, so moving the relay does not

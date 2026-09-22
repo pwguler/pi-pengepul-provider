@@ -259,6 +259,63 @@ function fallbackLevelMap(id: string): Record<string, string | null> | undefined
   return id.toLowerCase().startsWith("commandcode/") ? { max: "max" } : undefined
 }
 
+/** The levels pi hides unless a map names them. */
+const INHERITED_LEVELS = ["xhigh", "max"] as const
+
+/**
+ * Extended levels a family's previous minor already carries.
+ *
+ * pi hides `xhigh` and `max` unless a model's map names them, so an id the
+ * catalogs have not caught up with - a Claude point release the relay serves
+ * today, before pi's catalog carries it - dropped to low/medium/high and could
+ * never send the top of a ladder its own family publishes: in the catalog Opus
+ * 4.5 names neither extension, 4.6 names max, and 4.7, 4.8 and 5 name xhigh and
+ * max. The previous minor's own entry is that answer, and the only evidence
+ * there is: the relay advertises no effort metadata, so `GET /v1/models` has
+ * nothing to say about levels and pi's map is the whole vocabulary.
+ *
+ * Add-only by construction. Only levels the sibling maps to a string come
+ * across, so an id that reaches this path can gain the top of the scale but
+ * never lose a level that works today, and never takes on a sibling's spelling
+ * for off/low/medium/high - the dialect rules downstream own those.
+ *
+ * Measured against the live catalog at the time of writing: exactly two ids
+ * enter this path, `anthropic/claude-opus-5-5` and
+ * `openrouter/anthropic/claude-opus-5.5`, each inheriting xhigh and max from
+ * `claude-opus-5`. No other family in that catalog was touched.
+ */
+function inheritedLevelMap(
+  id: string,
+  dialect: PengepulDialect,
+  lookup: BuiltinModelLookup | undefined,
+): Record<string, string | null> | undefined {
+  const siblingId = previousMinorId(id)
+  const siblingMap = siblingId ? lookup?.(siblingId, dialect)?.thinkingLevelMap : undefined
+  if (!siblingMap) return undefined
+
+  const inherited: Record<string, string | null> = {}
+  for (const level of INHERITED_LEVELS) {
+    const mapped = siblingMap[level]
+    if (typeof mapped === "string") inherited[level] = mapped
+  }
+  return Object.keys(inherited).length > 0 ? inherited : undefined
+}
+
+/**
+ * The same id one minor older, keeping the routing namespace:
+ * `anthropic/claude-opus-5-5` -> `anthropic/claude-opus-5`, and the dotted
+ * `claude-opus-5.5` -> `claude-opus-5` for the Chat Completions spelling.
+ * Undefined when the name carries no trailing version segment to drop, which
+ * keeps qualifiers (`-preview`, `-flash`, `-fast`) out of the derivation.
+ */
+function previousMinorId(id: string): string | undefined {
+  const slash = id.lastIndexOf("/")
+  const name = slash === -1 ? id : id.slice(slash + 1)
+  const stripped = name.replace(/[.-]\d+$/, "")
+  if (stripped === name || stripped === "") return undefined
+  return slash === -1 ? stripped : `${id.slice(0, slash + 1)}${stripped}`
+}
+
 /**
  * Resolve a model's metadata, most trustworthy source first:
  *   1. what pengepul advertises (first-party for this relay),
@@ -266,6 +323,11 @@ function fallbackLevelMap(id: string): Record<string, string | null> | undefined
  *   3. family heuristics.
  * Sources merge per field, so a relay that sends only `context_window` still
  * picks up pricing and modalities from the catalog.
+ *
+ * A catalog miss on a reasoning model still gets its extended levels from the
+ * family's previous minor where the catalog carries one (`inheritedLevelMap`);
+ * the namespace fallback for the Chat Completions wire then takes precedence
+ * over both.
  */
 function metaFor(
   entry: Record<string, unknown>,
@@ -294,7 +356,20 @@ function metaFor(
   const fallback =
     known || !reasoning || dialect !== "openai-completions" ? undefined : fallbackLevelMap(id)
 
-  return { ...meta, reasoning, ...(fallback ? { thinkingLevelMap: fallback } : {}) }
+  // A catalog miss is not always silence: the family's previous minor answers
+  // for the levels the catalog has not named yet. Whatever the base resolved
+  // wins over it, so a relay that starts advertising a map still outranks this.
+  const inherited = known || !reasoning ? undefined : inheritedLevelMap(id, dialect, lookup)
+  const levelMap = inherited
+    ? { ...inherited, ...(meta.thinkingLevelMap ?? {}) }
+    : meta.thinkingLevelMap
+
+  return {
+    ...meta,
+    reasoning,
+    ...(levelMap ? { thinkingLevelMap: levelMap } : {}),
+    ...(fallback ? { thinkingLevelMap: fallback } : {}),
+  }
 }
 
 function toPengepulModel(
