@@ -1,6 +1,6 @@
 {
   "name": "@pwguler/pi-pengepul-provider",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "pi custom provider for pengepul, a relay that pools your Claude/Codex subscriptions. Key and relay base live in auth.json; both native wires (Anthropic Messages, OpenAI Chat Completions) come from one catalog.",
   "license": "MIT",
