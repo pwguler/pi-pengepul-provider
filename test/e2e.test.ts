@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type { Provider } from "@earendil-works/pi-ai";
 
@@ -14,8 +11,8 @@ import type { PengepulApiKeyCredential } from "../extensions/provider.ts";
  * real extension seam registers a provider that pi then refreshes.
  *
  * The credential is what a user writes into auth.json: an API key plus the relay
- * base. Nothing here sets an environment variable, which is the whole point of
- * the rewrite — the env vars stay supported, but they are no longer required.
+ * base. Nothing here sets an environment variable: auth.json is the surface, and
+ * the env vars only override it.
  */
 
 const MODELS_BODY = {
@@ -35,12 +32,9 @@ const MODELS_BODY = {
 describe("pi-pengepul-provider end to end", () => {
   let server: Server;
   let baseUrl: string;
-  let dir: string;
   const received: Record<string, string | undefined> = {};
 
   beforeEach(async () => {
-    dir = mkdtempSync(join(tmpdir(), "pi-pengepul-e2e-"));
-
     server = createServer((req, res) => {
       received["path"] = req.url;
       received["x-api-key"] = (req.headers["x-api-key"] as string) ?? undefined;
@@ -63,7 +57,6 @@ describe("pi-pengepul-provider end to end", () => {
 
   afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    rmSync(dir, { recursive: true, force: true });
   });
 
   test("registers a provider whose refresh discovers the relay catalog from the credential", async () => {
@@ -132,7 +125,7 @@ describe("pi-pengepul-provider end to end", () => {
     expect(received["path"]).toBe("/v1/models");
     expect(received["x-api-key"]).toBe("sk-local-e2e");
 
-    // The catalog is persisted for the next start, cache phase included.
+    // The catalog is persisted for the next start, offline restore included.
     expect(persisted).toHaveLength(1);
   }, 10_000);
 });

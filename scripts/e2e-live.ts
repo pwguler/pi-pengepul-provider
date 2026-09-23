@@ -5,8 +5,8 @@
  *
  *   1. loads the actual extension seam with a fake pi host,
  *   2. refreshes the provider the way pi does, discovering the relay's real
- *      model catalog with the real key (auth.json / PENGEPUL_API_KEY /
- *      ~/.pengepul/config.yaml),
+ *      model catalog with the real key (auth.json, or the PENGEPUL_API_KEY /
+ *      PENGEPUL_BASE_URL overrides),
  *   3. prints what pi would see in /model,
  *   4. sends ONE minimal completion ("reply exactly: pong") through the
  *      provider's own stream for the first claude-* model, proving the whole
@@ -49,6 +49,7 @@ console.log(`base url: ${provider.baseUrl}`)
 // --- 2. the refresh pi performs, minus pi --------------------------------
 // The relay base and key come from the environment here because this script is
 // its own client; in pi they come from the credential in auth.json.
+
 const credential = {
   type: "api_key" as const,
   ...(process.env["PENGEPUL_API_KEY"] ? { key: process.env["PENGEPUL_API_KEY"] } : {}),
@@ -61,7 +62,7 @@ const auth = await provider.auth.apiKey?.resolve({
   signal: new AbortController().signal,
 })
 if (!auth) {
-  console.error("FAIL: no pengepul API key configured (PENGEPUL_API_KEY, auth.json, or ~/.pengepul/config.yaml)")
+  console.error("FAIL: no pengepul API key configured (auth.json or PENGEPUL_API_KEY)")
   process.exit(1)
 }
 console.log(`api key:  ${redactKey(auth.auth.apiKey)} (${auth.source ?? "unknown source"})`)

@@ -1,7 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, expect, test } from "bun:test";
 
 // A minimal fetch stand-in. The real `fetch` type requires more (e.g. `preconnect`),
 // so we build a partial implementation and cast once at the boundary.
@@ -13,9 +10,7 @@ import {
   bareId,
   catalogIdForms,
   fetchPengepulModels,
-  loadCachedPengepulModels,
   modelsFromApiResponse,
-  modelsFromCache,
   restampRelayBase,
   toPengepulModels,
   type BuiltinModelLookup,
@@ -893,85 +888,6 @@ describe("restampRelayBase", () => {
   });
 });
 
-describe("modelsFromCache", () => {
-  test("rejects an envelope written before the compat shape changed", () => {
-    // v3 entries predate supportsLongCacheRetention. Replaying one would
-    // register Claude models without the flag and silently disable the 1h
-    // cache until the next successful fetch.
-    const models = modelsFromApiResponse(API_BODY);
-    expect(() =>
-      modelsFromCache({ version: 3, models: models.map((m) => ({ ...m })) }),
-    ).toThrow();
-  });
-
-  test("rejects an envelope written before the relay reasoning flag was read", () => {
-    // v4 entries predate reading the relay's tri-state `reasoning` flag.
-    // Replaying one would keep registering relay-reasoning models as
-    // non-reasoning (no thinking picker) until the next successful fetch.
-    const models = modelsFromApiResponse(API_BODY);
-    expect(() =>
-      modelsFromCache({ version: 4, models: models.map((m) => ({ ...m })) }),
-    ).toThrow();
-  });
-
-  test("rejects an envelope written before the relay-uniform level overlay", () => {
-    // v5 entries predate nulling off/minimal on every openai-completions
-    // reasoning model. Replaying one would keep offering catalog levels the
-    // relay rejects (minimal, off:"none") until the next successful fetch.
-    const models = modelsFromApiResponse(API_BODY);
-    expect(() =>
-      modelsFromCache({ version: 5, models: models.map((m) => ({ ...m })) }),
-    ).toThrow();
-  });
-
-  test("round-trips through the cache envelope", () => {
-    const models = modelsFromApiResponse(API_BODY);
-    const cached = modelsFromCache({
-      version: 6,
-      models: models.map((m) => ({ ...m })),
-    });
-    expect(cached).toHaveLength(3);
-    expect(cached[0]?.dialect).toBe("anthropic-messages");
-    expect(cached[0]?.input).toEqual(["text"]);
-  });
-
-  test("a cache holding nothing but batch routes is rejected as invalid", () => {
-    // Filtering before the guard matters here. With the guard first, this cache
-    // parses to an empty list, and loadPengepulModels reports source "cache"
-    // with "Using the cached catalog" while handing pi zero models - a warning
-    // that contradicts itself. Throwing routes it to the accurate "no valid
-    // cached catalog" message instead.
-    const models = modelsFromApiResponse(API_BODY);
-    const batch = {
-      ...models[2]!,
-      id: "openrouter/openai/gpt-5.4:batch",
-      name: "gpt-5.4:batch (pengepul)",
-    };
-    expect(() => modelsFromCache({ version: 6, models: [batch] })).toThrow();
-  });
-
-  test("a cache written before the batch routes were dropped sheds them too", () => {
-    // The cache covers a briefly absent relay, so it must not be the path that
-    // resurrects a route the live catalog now leaves out. This is the one
-    // shape the version guard cannot catch: v6 is still current, it simply
-    // predates the filter.
-    const models = modelsFromApiResponse(API_BODY);
-    const cached = modelsFromCache({
-      version: 6,
-      models: [...models.map((m) => ({ ...m })), { ...models[2]!, id: "openrouter/openai/gpt-5.4:batch" }],
-    });
-    expect(cached.map((m) => m.id)).toEqual([
-      "claude-sonnet-4-6",
-      "claude-opus-5",
-      "gpt-5.4",
-    ]);
-  });
-
-  test("throws on a wrong cache version (stale v1 windows are rejected)", () => {
-    expect(() => modelsFromCache({ version: 2, models: [] })).toThrow();
-  });
-});
-
 describe("fetchPengepulModels", () => {
   test("sends x-api-key and returns parsed models", async () => {
     let sentHeaders: Record<string, string> | undefined;
@@ -1000,33 +916,3 @@ describe("fetchPengepulModels", () => {
     ).rejects.toThrow(/API key/i);
   });
 });
-
-describe("loadCachedPengepulModels", () => {
-  let dir: string;
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "pi-pengepul-"));
-  });
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  test("reads a pre-0.3 cache file so an upgrade does not start blind", () => {
-    const cachePath = join(dir, "pengepul-models.json");
-    writeFileSync(
-      cachePath,
-      JSON.stringify({ version: 6, models: modelsFromApiResponse(API_BODY) }),
-      { mode: 0o600 },
-    );
-    return expect(loadCachedPengepulModels(cachePath)).resolves.toHaveLength(3);
-  });
-
-  test("reads nothing when the file is missing or unusable", async () => {
-    expect(await loadCachedPengepulModels(join(dir, "absent.json"))).toEqual([]);
-
-    const cachePath = join(dir, "garbage.json");
-    writeFileSync(cachePath, "not json", { mode: 0o600 });
-    expect(await loadCachedPengepulModels(cachePath)).toEqual([]);
-  });
-});
-

@@ -1,34 +1,17 @@
 /**
- * Where the pengepul provider's fallback sources live.
+ * The environment overrides this provider reads.
  *
- * `auth.json` is the configuration surface. These are the escape hatches kept
- * for tests, CI, and a machine that happens to run the relay itself: env vars
- * for the relay base and key, and pengepul's own config on disk.
+ * `~/.pi/agent/auth.json` is the configuration surface: the pengepul entry
+ * carries the relay API key and the relay base it applies to, and
+ * `/login pengepul` writes both. These variables outrank it, so a shell or a CI
+ * run can re-point the provider without editing the file.
  */
 
-import { join } from "node:path"
-
-import { CONFIG_PATH_ENV, DEFAULT_CONFIG_PATH } from "./api-key.ts"
-
-export { CONFIG_PATH_ENV, DEFAULT_CONFIG_PATH }
-
+/** Relay base URL. Outranks the credential's `baseUrl`. */
 export const RELAY_BASE_ENV = "PENGEPUL_BASE_URL"
-export const MODELS_CACHE_ENV = "PENGEPUL_MODELS_CACHE"
+
+/** Relay API key. Outranks the credential's `key`. */
+export const API_KEY_ENV = "PENGEPUL_API_KEY"
+
+/** Milliseconds before model discovery gives up. */
 export const MODELS_TIMEOUT_MS_ENV = "PENGEPUL_MODELS_TIMEOUT_MS"
-
-export interface PengepulSettings {
-  /** Where pengepul's own config lives, when this machine runs the relay. */
-  configPath: string
-  /** Where the pre-0.3 catalog cache lives; read once to seed pi's store. */
-  legacyCachePath: string
-}
-
-export function resolveSettings(
-  env: Record<string, string | undefined>,
-  agentDir: string,
-): PengepulSettings {
-  return {
-    configPath: env[CONFIG_PATH_ENV] ?? DEFAULT_CONFIG_PATH,
-    legacyCachePath: env[MODELS_CACHE_ENV] ?? join(agentDir, "pengepul-models.json"),
-  }
-}

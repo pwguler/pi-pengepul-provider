@@ -32,7 +32,7 @@ _Avoid_: config, token, secrets
 
 - A **Relay** holds one or more **Pools**, one per upstream provider.
 - One **Relay base** serves both **Dialects**; the **Catalog** tells which model id speaks which.
-- A **Credential** binds one API key to one **Relay base**.
+- A **Credential** binds one API key to one **Relay base**; the `PENGEPUL_*` environment variables override either field.
 - The **Catalog** is per **Relay**; moving the base re-points every model in it.
 
 ## Example dialogue
@@ -46,4 +46,4 @@ _Avoid_: config, token, secrets
 ## Flagged ambiguities
 
 - "base URL" was used for both the **Relay base** (no `/v1`) and a per-model URL that ends in `/v1` for the Chat Completions **Dialect**. Resolved: **Relay base** is the root; per-model URLs are derived from it.
-- "config" was used for pi's `auth.json`, pengepul's own `config.yaml`, and `models.json`. Resolved: the **Credential** is the configuration surface; pengepul's `config.yaml` is only a same-box fallback; `models.json` is not a supported surface for this provider.
+- "config" was used for pi's `auth.json`, pengepul's own `config.yaml`, and `models.json`. Resolved: the **Credential** is the configuration surface, with the `PENGEPUL_*` environment variables as overrides on top of it; pengepul's `config.yaml` is not read; `models.json` is not a supported surface for this provider.

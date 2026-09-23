@@ -2,11 +2,11 @@
  * The pengepul provider, as pi-ai sees it.
  *
  * Registered as a native provider, so pi resolves auth through this module and
- * hands the credential back to `refreshModels`. That closes two gaps the
- * config-value form had: model discovery now uses the same resolved key pi uses
- * for requests (it used to read only `PENGEPUL_API_KEY` and pengepul's own
- * config, so a key stored in `auth.json` produced a 401), and the relay base
- * comes from the credential instead of the environment.
+ * hands the credential back to `refreshModels`. Discovery and requests
+ * therefore resolve the same key and the same relay base: environment first,
+ * then the credential. A provider declared as plain config values has no
+ * credential at discovery time, so a key stored in `auth.json` left its
+ * catalog fetch with nothing to send but an environment variable, and a 401.
  *
  * The relay base lives on the credential as `baseUrl`, a field pi core does not
  * read. Per-model base URLs are derived from it, because pi applies a base URL
@@ -27,12 +27,10 @@ import type {
 } from "@earendil-works/pi-ai"
 import { anthropicMessagesApi, lazyStream, openAICompletionsApi } from "@earendil-works/pi-ai/compat"
 
-import { API_KEY_ENV, extractApiKeys } from "./api-key.ts"
-import { RELAY_BASE_ENV } from "./config.ts"
+import { API_KEY_ENV, RELAY_BASE_ENV } from "./config.ts"
 import {
   credentialApiKey,
   credentialRelayBase,
-  relayBaseFromConfigText,
   resolveApiKey,
   resolveRelayBase,
   type PengepulCredential,
@@ -43,7 +41,6 @@ import {
   fetchPengepulModels,
   getModelsTimeoutMs,
   isPengepulModelEntry,
-  loadCachedPengepulModels,
   PENGEPUL_PROVIDER_ID,
   restampRelayBase,
   toPengepulModels,
@@ -58,16 +55,9 @@ export interface PengepulApiKeyCredential extends ApiKeyCredential {
   baseUrl?: string
 }
 
-/** Where the config-file fallback key comes from, for the status label. */
-const CONFIG_FILE_LABEL = "~/.pengepul/config.yaml"
-
 export interface PengepulProviderOptions {
   /** Environment map holding the optional `PENGEPUL_*` overrides. */
   env?: Record<string, string | undefined>
-  /** Text of pengepul's own config, when this machine happens to run the relay. */
-  configText?: string
-  /** Where the pre-0.3 catalog cache lives; read once to seed pi's store. */
-  legacyCachePath: string
   /** Catalog fetch transport, for tests. */
   fetchImpl?: typeof fetch
   /** Builtin metadata lookup, injected so the catalog logic stays free of pi imports. */
@@ -90,9 +80,9 @@ function isPengepulDialect(api: Api): api is PengepulDialect {
 /**
  * A provider whose catalog comes from pengepul and whose auth is the relay key.
  *
- * Ambient sources are read from the captured environment and config text, not
- * from `AuthContext.env`, because `refreshModels` receives no auth context and
- * both paths must agree on what the key and base are.
+ * The environment overrides are read from the captured environment, not from
+ * `AuthContext.env`, because `refreshModels` receives no auth context and both
+ * paths must agree on what the key and base are.
  */
 export function createPengepulProvider(options: PengepulProviderOptions): Provider {
   const env = options.env ?? process.env
@@ -104,23 +94,23 @@ export function createPengepulProvider(options: PengepulProviderOptions): Provid
 
   const environmentRelayBase = env[RELAY_BASE_ENV]
   const environmentApiKey = env[API_KEY_ENV]
-  const configText = options.configText
-  const configRelayBase = relayBaseFromConfigText(configText)
-  const configApiKey = configText ? extractApiKeys(configText)[0] : undefined
 
   let models: PengepulModelEntry[] = []
 
-  /** The key from outside auth.json, with the label the status UI shows. */
-  function ambientKey(): { key?: string; source?: string } {
-    if (environmentApiKey?.trim()) return { key: environmentApiKey.trim(), source: API_KEY_ENV }
-    if (configApiKey) return { key: configApiKey, source: CONFIG_FILE_LABEL }
-    return {}
+  /** The relay base in force: the environment override, else the credential, else loopback. */
+  function relayBaseFor(credential: unknown): string {
+    return resolveRelayBase({
+      environment: environmentRelayBase,
+      credential: credentialRelayBase(credential as PengepulCredential | undefined),
+    })
   }
 
-  function resolveKey(credential: unknown): { key?: string; source?: string } {
-    const stored = credentialApiKey(credential as PengepulCredential | undefined)
-    if (stored) return { key: stored, source: "stored credential" }
-    return ambientKey()
+  /** The key in force, with the label the status UI shows for it. */
+  function resolveKey(credential: unknown) {
+    return resolveApiKey({
+      environment: environmentApiKey,
+      credential: credentialApiKey(credential as PengepulCredential | undefined),
+    })
   }
 
   const streams: Record<PengepulDialect, ProviderStreams> = {
@@ -138,38 +128,26 @@ export function createPengepulProvider(options: PengepulProviderOptions): Provid
     })
   }
 
-  async function restoreOrSeed(context: RefreshModelsContext): Promise<boolean> {
-    const relayBase = resolveRelayBase({
-      credential: credentialRelayBase(context.credential as PengepulCredential | undefined),
-      environment: environmentRelayBase,
-      config: configRelayBase,
-    })
-
+  /**
+   * Re-publish pi's stored catalog with every base URL re-derived from the
+   * base in force, so a relay that moved is not reached at its old address.
+   * Returns false only when pi refused the publication, the one case that
+   * skips the network phase.
+   */
+  async function restoreStored(context: RefreshModelsContext): Promise<boolean> {
     const stored = (context.stored?.models ?? []).filter(isPengepulModelEntry)
-    if (stored.length > 0) {
-      const restored = restampRelayBase(stored, relayBase)
-      return context.publish({ update: () => { models = restored } })
-    }
-
-    // Pre-0.3 installs kept their own cache file. Read it once so an upgrade
-    // does not start blind; pi's store owns the catalog from here on.
-    const legacy = await loadCachedPengepulModels(options.legacyCachePath)
-    if (legacy.length === 0) return true
-    const seeded = toPengepulModels(legacy, relayBase)
-    return context.publish({ update: () => { models = seeded } })
+    if (stored.length === 0) return true
+    const restored = restampRelayBase(stored, relayBaseFor(context.credential))
+    return context.publish({ update: () => { models = restored } })
   }
 
   async function refreshFromRelay(context: RefreshModelsContext): Promise<void> {
-    const relayBase = resolveRelayBase({
-      credential: credentialRelayBase(context.credential as PengepulCredential | undefined),
-      environment: environmentRelayBase,
-      config: configRelayBase,
-    })
+    const relayBase = relayBaseFor(context.credential)
 
     const resolved = resolveKey(context.credential)
-    if (!resolved.key) {
+    if (!resolved) {
       logWarning(
-        `No pengepul API key is configured (${API_KEY_ENV}, ${CONFIG_FILE_LABEL}, or auth.json), so the model catalog cannot be refreshed. Run /login pengepul.`,
+        `No pengepul API key is configured (${API_KEY_ENV} or auth.json), so the model catalog cannot be refreshed. Run /login pengepul.`,
       )
       return
     }
@@ -201,10 +179,7 @@ export function createPengepulProvider(options: PengepulProviderOptions): Provid
   return {
     id: PENGEPUL_PROVIDER_ID,
     name: "Pengepul",
-    baseUrl: resolveRelayBase({
-      environment: environmentRelayBase,
-      config: configRelayBase,
-    }),
+    baseUrl: resolveRelayBase({ environment: environmentRelayBase }),
     auth: {
       apiKey: {
         name: "Pengepul relay",
@@ -231,25 +206,20 @@ export function createPengepulProvider(options: PengepulProviderOptions): Provid
         },
         check: async (input): Promise<AuthCheck | undefined> => {
           const resolved = resolveKey(input.credential)
-          return resolved.key
-            ? { type: "api_key", ...(resolved.source ? { source: resolved.source } : {}) }
-            : undefined
+          return resolved ? { type: "api_key", source: resolved.source } : undefined
         },
         resolve: async (input): Promise<AuthResult | undefined> => {
           const resolved = resolveKey(input.credential)
-          if (!resolved.key) return undefined
+          if (!resolved) return undefined
           // No `baseUrl` here on purpose: pi would apply it to every model and
           // collapse the two dialect base URLs into one.
-          return {
-            auth: { apiKey: resolved.key },
-            ...(resolved.source ? { source: resolved.source } : {}),
-          }
+          return { auth: { apiKey: resolved.key }, source: resolved.source }
         },
       },
     },
     getModels: () => models,
     refreshModels: async (context) => {
-      if (!(await restoreOrSeed(context))) return
+      if (!(await restoreStored(context))) return
       if (!context.allowNetwork || context.signal.aborted) return
       await refreshFromRelay(context)
     },

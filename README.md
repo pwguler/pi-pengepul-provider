@@ -89,24 +89,44 @@ To reach a relay on another machine, put that machine's address in `baseUrl`
 `~/.pengepul/config.yaml` on the relay, or forward the port over SSH). The key
 is the relay's own key — `pengepul config api-key` prints it.
 
-Optional overrides, for CI or a one-off shell. Each is a fallback: the
-credential wins when it carries a value.
+Optional overrides, for CI or a one-off shell. The first two outrank the
+credential: set either and it wins, whatever `auth.json` holds.
 
 | Setting | Env var | Default |
 |---|---|---|
-| Relay base URL | `PENGEPUL_BASE_URL` | `http://127.0.0.1:8317`, or the relay's own `config.yaml` |
-| API key | `PENGEPUL_API_KEY` | `api-keys[0]` in `~/.pengepul/config.yaml` |
-| Config path | `PENGEPUL_CONFIG` | `~/.pengepul/config.yaml` |
-| Legacy cache path | `PENGEPUL_MODELS_CACHE` | `<agent-dir>/pengepul-models.json` |
+| Relay base URL | `PENGEPUL_BASE_URL` | `http://127.0.0.1:8317`, or the credential's `baseUrl` |
+| API key | `PENGEPUL_API_KEY` | the credential's `key` |
 | Discovery timeout | `PENGEPUL_MODELS_TIMEOUT_MS` | `10000` |
 
-`PENGEPUL_MODELS_CACHE` names the pre-0.3 cache file. It is read once, when pi's
-model store has no pengepul catalog yet, and never written again.
+```sh
+PENGEPUL_BASE_URL=http://10.0.0.9:8317 PENGEPUL_API_KEY=sk-local-... pi
+```
 
 Do not set `providers.pengepul.baseUrl` in `models.json`. pi applies that value
 to every model of the provider, which collapses the two wires onto one URL —
 Anthropic Messages traffic would be sent to `/v1` and Chat Completions traffic
 to `/`.
+
+## Upgrading from 0.4.0 or earlier
+
+This release is breaking: the relay's own `~/.pengepul/config.yaml` is no longer
+a source. That file belongs to the machine running the relay, and reading it let
+a key on that box configure every client sharing it.
+
+- A key that came from `api-keys:` in it is no longer picked up. Run
+  `/login pengepul`, or put it in `auth.json` as `"pengepul".key`, or export
+  `PENGEPUL_API_KEY`. `pengepul config api-key` prints it.
+- The relay base built from its `host` and `port` is no longer picked up
+  either. Set `baseUrl` in `auth.json`, or `PENGEPUL_BASE_URL`, if the relay is
+  not on `http://127.0.0.1:8317`.
+- A pre-0.3 `<agent-dir>/pengepul-models.json` is no longer imported. The
+  catalog now comes from the relay on the next start, so the relay has to be
+  reachable once; pi's model store covers the rest.
+
+Resolution order changed as well, and that is the part to check after an
+upgrade: `PENGEPUL_BASE_URL` and `PENGEPUL_API_KEY` now win over `auth.json`,
+where they previously lost to it. An exported key from an old shell now
+overrides the one in the credential.
 
 ## Notes
 

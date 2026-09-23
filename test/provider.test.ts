@@ -1,7 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type {
   AuthContext,
@@ -95,90 +92,68 @@ function refreshHarness(
   };
 }
 
-/** A provider wired to a temp dir, a fake env, and a mock fetch. */
+/** A provider wired to a fake env and a mock fetch. */
 function harness(options: {
   fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;
-  legacyCachePath?: string;
-  configText?: string;
   onWarning?: (message: string) => void;
 } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "pengepul-provider-"));
-  const legacyCachePath = options.legacyCachePath ?? join(dir, "pengepul-models.json");
   const provider = createPengepulProvider({
     env: options.env ?? {},
-    legacyCachePath,
-    configText: options.configText,
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     ...(options.onWarning ? { logWarning: options.onWarning } : {}),
   });
-  return {
-    provider,
-    legacyCachePath,
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
-  };
+  return { provider };
 }
 
 describe("createPengepulProvider", () => {
   test("identifies itself as the pengepul provider with both streams wired", () => {
     const h = harness();
-    try {
-      expect(h.provider.id).toBe("pengepul");
-      expect(h.provider.name).toBe("Pengepul");
-      expect(typeof h.provider.stream).toBe("function");
-      expect(typeof h.provider.streamSimple).toBe("function");
-      expect(typeof h.provider.refreshModels).toBe("function");
-      expect(h.provider.auth.apiKey).toBeDefined();
-      expect(h.provider.auth.oauth).toBeUndefined();
-    } finally {
-      h.cleanup();
-    }
+    expect(h.provider.id).toBe("pengepul");
+    expect(h.provider.name).toBe("Pengepul");
+    expect(typeof h.provider.stream).toBe("function");
+    expect(typeof h.provider.streamSimple).toBe("function");
+    expect(typeof h.provider.refreshModels).toBe("function");
+    expect(h.provider.auth.apiKey).toBeDefined();
+    expect(h.provider.auth.oauth).toBeUndefined();
   });
 });
 
 describe("pengepul login", () => {
   test("asks for the key, then the relay URL, and stores both", async () => {
     const h = harness();
-    try {
-      const credential = await h.provider.auth.apiKey?.login?.(
-        interaction(["sk-local-abc", "http://10.10.1.100:8317"]),
-      );
-      const expected: PengepulApiKeyCredential = {
-        type: "api_key",
-        key: "sk-local-abc",
-        baseUrl: "http://10.10.1.100:8317",
-      };
-      expect(credential).toEqual(expected);
-    } finally {
-      h.cleanup();
-    }
+    const credential = await h.provider.auth.apiKey?.login?.(
+      interaction(["sk-local-abc", "http://10.10.1.100:8317"]),
+    );
+    const expected: PengepulApiKeyCredential = {
+      type: "api_key",
+      key: "sk-local-abc",
+      baseUrl: "http://10.10.1.100:8317",
+    };
+    expect(credential).toEqual(expected);
   });
 
   test("defaults a blank relay URL to loopback and strips a trailing /v1", async () => {
     // pi replaces the whole credential object on login, so the URL it writes
     // is the only thing standing between the user and a silently local relay.
     const h = harness();
-    try {
-      const blank = await h.provider.auth.apiKey?.login?.(interaction(["sk-local-abc", "  "]));
-      const expectedBlank: PengepulApiKeyCredential = {
-        type: "api_key",
-        key: "sk-local-abc",
-        baseUrl: "http://127.0.0.1:8317",
-      };
-      expect(blank).toEqual(expectedBlank);
+    const blank = await h.provider.auth.apiKey?.login?.(interaction(["sk-local-abc", "  "]));
+    const expectedBlank: PengepulApiKeyCredential = {
+      type: "api_key",
+      key: "sk-local-abc",
+      baseUrl: "http://127.0.0.1:8317",
+    };
+    expect(blank).toEqual(expectedBlank);
 
-      const withV1 = await h.provider.auth.apiKey?.login?.(
-        interaction(["sk-local-abc", "http://relay.example.com/v1"]),
-      );
-      const expectedStripped: PengepulApiKeyCredential = {
-        type: "api_key",
-        key: "sk-local-abc",
-        baseUrl: "http://relay.example.com",
-      };
-      expect(withV1).toEqual(expectedStripped);
-    } finally {
-      h.cleanup();
-    }
+    const withV1 = await h.provider.auth.apiKey?.login?.(
+      interaction(["sk-local-abc", "http://relay.example.com/v1"]),
+    );
+    const expectedStripped: PengepulApiKeyCredential = {
+      type: "api_key",
+      key: "sk-local-abc",
+      baseUrl: "http://relay.example.com",
+    };
+    expect(withV1).toEqual(expectedStripped);
   });
 });
 
@@ -188,88 +163,75 @@ describe("pengepul auth resolution", () => {
     // two dialect base URLs onto one. The per-model baseUrl is the only place
     // the wire split can live.
     const h = harness();
-    try {
-      const stored: PengepulApiKeyCredential = {
-        type: "api_key",
-        key: "sk-local-abc",
-        baseUrl: "http://10.10.1.100:8317",
-      };
-      const resolved = (await h.provider.auth.apiKey?.resolve({
-        ctx: authContext(),
-        credential: stored,
-        signal: new AbortController().signal,
-      })) as AuthResult | undefined;
+    const stored: PengepulApiKeyCredential = {
+      type: "api_key",
+      key: "sk-local-abc",
+      baseUrl: "http://10.10.1.100:8317",
+    };
+    const resolved = (await h.provider.auth.apiKey?.resolve({
+      ctx: authContext(),
+      credential: stored,
+      signal: new AbortController().signal,
+    })) as AuthResult | undefined;
 
-      expect(resolved?.auth.apiKey).toBe("sk-local-abc");
-      expect(resolved?.auth.baseUrl).toBeUndefined();
-    } finally {
-      h.cleanup();
-    }
+    expect(resolved?.auth.apiKey).toBe("sk-local-abc");
+    expect(resolved?.auth.baseUrl).toBeUndefined();
   });
 
-  test("falls back to the environment, then to pengepul's own config", async () => {
-    const fromEnv = harness({ env: { PENGEPUL_API_KEY: "sk-env" } });
-    try {
-      const resolved = await fromEnv.provider.auth.apiKey?.resolve({
-        ctx: authContext(),
-        signal: new AbortController().signal,
-      });
-      expect(resolved?.auth.apiKey).toBe("sk-env");
-    } finally {
-      fromEnv.cleanup();
-    }
-
-    const fromConfig = harness({
-      configText: "host: ''\nport: 8317\napi-keys:\n- sk-local-from-config\n",
+  test("falls back to the environment when the credential carries no key", async () => {
+    const h = harness({ env: { PENGEPUL_API_KEY: "sk-env" } });
+    const credential: PengepulApiKeyCredential = {
+      type: "api_key",
+      baseUrl: "http://10.10.1.100:8317",
+    };
+    const resolved = await h.provider.auth.apiKey?.resolve({
+      ctx: authContext(),
+      credential,
+      signal: new AbortController().signal,
     });
-    try {
-      const resolved = await fromConfig.provider.auth.apiKey?.resolve({
-        ctx: authContext(),
-        signal: new AbortController().signal,
-      });
-      expect(resolved?.auth.apiKey).toBe("sk-local-from-config");
-    } finally {
-      fromConfig.cleanup();
-    }
+    expect(resolved?.auth.apiKey).toBe("sk-env");
+    expect(resolved?.source).toBe("PENGEPUL_API_KEY");
   });
 
   test("reports unconfigured when no key exists anywhere", async () => {
     const h = harness();
-    try {
-      const resolved = await h.provider.auth.apiKey?.resolve({
-        ctx: authContext(),
-        signal: new AbortController().signal,
-      });
-      expect(resolved).toBeUndefined();
+    const resolved = await h.provider.auth.apiKey?.resolve({
+      ctx: authContext(),
+      signal: new AbortController().signal,
+    });
+    expect(resolved).toBeUndefined();
 
-      const checked = await h.provider.auth.apiKey?.check?.({
-        ctx: authContext(),
-        signal: new AbortController().signal,
-      });
-      expect(checked).toBeUndefined();
-    } finally {
-      h.cleanup();
-    }
+    const checked = await h.provider.auth.apiKey?.check?.({
+      ctx: authContext(),
+      signal: new AbortController().signal,
+    });
+    expect(checked).toBeUndefined();
   });
 
-  test("reports a stored credential and an ambient one differently", async () => {
-    const h = harness({ env: { PENGEPUL_API_KEY: "sk-env" } });
-    try {
-      const stored = await h.provider.auth.apiKey?.check?.({
-        ctx: authContext(),
-        credential: { type: "api_key", key: "sk-local-abc" },
-        signal: new AbortController().signal,
-      });
-      expect(stored).toEqual({ type: "api_key", source: "stored credential" });
+  test("labels the stored credential as its source when no override is set", async () => {
+    const h = harness();
+    const stored = await h.provider.auth.apiKey?.check?.({
+      ctx: authContext(),
+      credential: { type: "api_key", key: "sk-local-abc" },
+      signal: new AbortController().signal,
+    });
+    expect(stored).toEqual({ type: "api_key", source: "stored credential" });
+  });
 
-      const ambient = await h.provider.auth.apiKey?.check?.({
-        ctx: authContext(),
-        signal: new AbortController().signal,
-      });
-      expect(ambient).toEqual({ type: "api_key", source: "PENGEPUL_API_KEY" });
-    } finally {
-      h.cleanup();
-    }
+  test("lets the environment key win over the stored one, label included", async () => {
+    const h = harness({ env: { PENGEPUL_API_KEY: "sk-env" } });
+    const checked = await h.provider.auth.apiKey?.check?.({
+      ctx: authContext(),
+      credential: { type: "api_key", key: "sk-local-abc" },
+      signal: new AbortController().signal,
+    });
+    expect(checked).toEqual({ type: "api_key", source: "PENGEPUL_API_KEY" });
+
+    const resolved = await h.provider.auth.apiKey?.resolve({
+      ctx: authContext(),
+      signal: new AbortController().signal,
+    });
+    expect(resolved?.auth.apiKey).toBe("sk-env");
   });
 });
 
@@ -282,70 +244,71 @@ describe("refreshModels: catalog fetch", () => {
         return jsonResponse(API_BODY);
       }),
     });
-    try {
-      const refresh = refreshHarness(h.provider, {
-        credential: { type: "api_key", key: "sk-local-abc", baseUrl: "http://10.10.1.100:8317" },
-        allowNetwork: true,
-      });
-      await h.provider.refreshModels?.(refresh.context);
+    const refresh = refreshHarness(h.provider, {
+      credential: { type: "api_key", key: "sk-local-abc", baseUrl: "http://10.10.1.100:8317" },
+      allowNetwork: true,
+    });
+    await h.provider.refreshModels?.(refresh.context);
 
-      expect(requested).toEqual([
-        { url: "http://10.10.1.100:8317/v1/models", apiKey: "sk-local-abc" },
-      ]);
-    } finally {
-      h.cleanup();
-    }
+    expect(requested).toEqual([
+      { url: "http://10.10.1.100:8317/v1/models", apiKey: "sk-local-abc" },
+    ]);
   });
 
   test("publishes models on the wire-correct base URL and persists them with a timestamp", async () => {
     const h = harness({ fetchImpl: mockFetch(async () => jsonResponse(API_BODY)) });
-    try {
-      const refresh = refreshHarness(h.provider, {
-        credential: { type: "api_key", key: "sk-local-abc", baseUrl: "http://10.10.1.100:8317" },
-        allowNetwork: true,
-      });
-      await h.provider.refreshModels?.(refresh.context);
+    const refresh = refreshHarness(h.provider, {
+      credential: { type: "api_key", key: "sk-local-abc", baseUrl: "http://10.10.1.100:8317" },
+      allowNetwork: true,
+    });
+    await h.provider.refreshModels?.(refresh.context);
 
-      const published = refresh.models();
-      expect(published.map((model) => model.id)).toEqual(["claude-sonnet-4-6", "gpt-5.4"]);
-      expect(published[0]?.baseUrl).toBe("http://10.10.1.100:8317");
-      expect(published[1]?.baseUrl).toBe("http://10.10.1.100:8317/v1");
+    const published = refresh.models();
+    expect(published.map((model) => model.id)).toEqual(["claude-sonnet-4-6", "gpt-5.4"]);
+    expect(published[0]?.baseUrl).toBe("http://10.10.1.100:8317");
+    expect(published[1]?.baseUrl).toBe("http://10.10.1.100:8317/v1");
 
-      const persisted = refresh.publications.at(-1)?.persist;
-      expect(persisted?.models.map((model) => model.id)).toEqual(["claude-sonnet-4-6", "gpt-5.4"]);
-      expect(typeof persisted?.checkedAt).toBe("number");
-    } finally {
-      h.cleanup();
-    }
+    const persisted = refresh.publications.at(-1)?.persist;
+    expect(persisted?.models.map((model) => model.id)).toEqual(["claude-sonnet-4-6", "gpt-5.4"]);
+    expect(typeof persisted?.checkedAt).toBe("number");
   });
 
-  test("the environment base wins over pengepul's config, and the credential wins over both", async () => {
-    const requested: string[] = [];
+  test("the environment relay base and key outrank the credential", async () => {
+    const requested: Array<{ url: string; apiKey: string | undefined }> = [];
     const h = harness({
       env: { PENGEPUL_BASE_URL: "http://env:8317", PENGEPUL_API_KEY: "sk-env" },
-      configText: "host: 10.0.0.9\nport: 9000\napi-keys:\n- sk-local-config\n",
-      fetchImpl: mockFetch(async (url) => {
-        requested.push(url);
+      fetchImpl: mockFetch(async (url, init) => {
+        requested.push({ url, apiKey: new Headers(init?.headers).get("x-api-key") ?? undefined });
         return jsonResponse(API_BODY);
       }),
     });
-    try {
-      const fromEnv = refreshHarness(h.provider, { allowNetwork: true });
-      await h.provider.refreshModels?.(fromEnv.context);
+    const override = refreshHarness(h.provider, {
+      credential: { type: "api_key", key: "sk-cred", baseUrl: "http://credential:8317" },
+      allowNetwork: true,
+    });
+    await h.provider.refreshModels?.(override.context);
 
-      const fromCredential = refreshHarness(h.provider, {
-        credential: { type: "api_key", key: "sk-cred", baseUrl: "http://credential:8317" },
-        allowNetwork: true,
-      });
-      await h.provider.refreshModels?.(fromCredential.context);
+    expect(requested).toEqual([{ url: "http://env:8317/v1/models", apiKey: "sk-env" }]);
+    expect(override.models()[0]?.baseUrl).toBe("http://env:8317");
+  });
 
-      expect(requested).toEqual([
-        "http://env:8317/v1/models",
-        "http://credential:8317/v1/models",
-      ]);
-    } finally {
-      h.cleanup();
-    }
+  test("takes the credential's base and key when no override is set", async () => {
+    const requested: Array<{ url: string; apiKey: string | undefined }> = [];
+    const h = harness({
+      fetchImpl: mockFetch(async (url, init) => {
+        requested.push({ url, apiKey: new Headers(init?.headers).get("x-api-key") ?? undefined });
+        return jsonResponse(API_BODY);
+      }),
+    });
+    const refresh = refreshHarness(h.provider, {
+      credential: { type: "api_key", key: "sk-cred", baseUrl: "http://credential:8317" },
+      allowNetwork: true,
+    });
+    await h.provider.refreshModels?.(refresh.context);
+
+    expect(requested).toEqual([
+      { url: "http://credential:8317/v1/models", apiKey: "sk-cred" },
+    ]);
   });
 
   test("skips the network entirely without a key", async () => {
@@ -358,15 +321,11 @@ describe("refreshModels: catalog fetch", () => {
       }),
       onWarning: (message) => warnings.push(message),
     });
-    try {
-      const refresh = refreshHarness(h.provider, { allowNetwork: true });
-      await h.provider.refreshModels?.(refresh.context);
-      expect(calls).toBe(0);
-      expect(refresh.models()).toEqual([]);
-      expect(warnings.join("\n")).toContain("No pengepul API key is configured");
-    } finally {
-      h.cleanup();
-    }
+    const refresh = refreshHarness(h.provider, { allowNetwork: true });
+    await h.provider.refreshModels?.(refresh.context);
+    expect(calls).toBe(0);
+    expect(refresh.models()).toEqual([]);
+    expect(warnings.join("\n")).toContain("No pengepul API key is configured");
   });
 });
 
@@ -409,116 +368,30 @@ describe("refreshModels: stored catalog", () => {
         return jsonResponse(API_BODY);
       }),
     });
-    try {
-      const refresh = refreshHarness(h.provider, {
-        credential: { type: "api_key", key: "sk-local-abc", baseUrl: "http://moved:8317" },
-        stored: storedModels("http://127.0.0.1:8317"),
-        allowNetwork: false,
-      });
-      await h.provider.refreshModels?.(refresh.context);
+    const refresh = refreshHarness(h.provider, {
+      credential: { type: "api_key", key: "sk-local-abc", baseUrl: "http://moved:8317" },
+      stored: storedModels("http://127.0.0.1:8317"),
+      allowNetwork: false,
+    });
+    await h.provider.refreshModels?.(refresh.context);
 
-      expect(calls).toBe(0);
-      expect(refresh.models()[0]?.baseUrl).toBe("http://moved:8317");
-      expect(refresh.models()[1]?.baseUrl).toBe("http://moved:8317/v1");
-    } finally {
-      h.cleanup();
-    }
+    expect(calls).toBe(0);
+    expect(refresh.models()[0]?.baseUrl).toBe("http://moved:8317");
+    expect(refresh.models()[1]?.baseUrl).toBe("http://moved:8317/v1");
   });
 
   test("restores from the store without persisting again", async () => {
     const h = harness({ fetchImpl: mockFetch(async () => jsonResponse(API_BODY)) });
-    try {
-      const refresh = refreshHarness(h.provider, {
-        stored: storedModels("http://127.0.0.1:8317"),
-        allowNetwork: false,
-      });
-      await h.provider.refreshModels?.(refresh.context);
-
-      expect(refresh.models()).toHaveLength(2);
-      expect(refresh.publications.every((publication) => publication.persist === undefined)).toBe(
-        true,
-      );
-    } finally {
-      h.cleanup();
-    }
-  });
-
-  test("imports a legacy cache file once, when the store has nothing", async () => {
-    const legacy = JSON.stringify({
-      version: 6,
-      models: [
-        {
-          id: "claude-sonnet-4-6",
-          name: "claude-sonnet-4-6 (pengepul)",
-          dialect: "anthropic-messages",
-          reasoning: true,
-          input: ["text"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 200_000,
-          maxTokens: 64_000,
-        },
-      ],
+    const refresh = refreshHarness(h.provider, {
+      stored: storedModels("http://127.0.0.1:8317"),
+      allowNetwork: false,
     });
-    const dir = mkdtempSync(join(tmpdir(), "pengepul-legacy-"));
-    const legacyCachePath = join(dir, "pengepul-models.json");
-    writeFileSync(legacyCachePath, legacy);
-    const h = harness({
-      legacyCachePath,
-      fetchImpl: mockFetch(async () => jsonResponse(API_BODY)),
-    });
-    try {
-      const offline = refreshHarness(h.provider, {
-        credential: { type: "api_key", key: "sk-local-abc", baseUrl: "http://10.10.1.100:8317" },
-        allowNetwork: false,
-      });
-      await h.provider.refreshModels?.(offline.context);
+    await h.provider.refreshModels?.(refresh.context);
 
-      expect(offline.models().map((model) => model.id)).toEqual(["claude-sonnet-4-6"]);
-      expect(offline.models()[0]?.baseUrl).toBe("http://10.10.1.100:8317");
-      // Read once, never written: the migration does not keep the old file alive.
-      expect(readFileSync(legacyCachePath, "utf-8")).toBe(legacy);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-      h.cleanup();
-    }
-  });
-
-  test("ignores a legacy cache the store already covers", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pengepul-legacy-"));
-    const legacyCachePath = join(dir, "pengepul-models.json");
-    writeFileSync(
-      legacyCachePath,
-      JSON.stringify({
-        version: 6,
-        models: [
-          {
-            id: "stale-model",
-            name: "stale",
-            dialect: "openai-completions",
-            reasoning: false,
-            input: ["text"],
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 200_000,
-            maxTokens: 64_000,
-          },
-        ],
-      }),
+    expect(refresh.models()).toHaveLength(2);
+    expect(refresh.publications.every((publication) => publication.persist === undefined)).toBe(
+      true,
     );
-    const h = harness({
-      legacyCachePath,
-      fetchImpl: mockFetch(async () => jsonResponse(API_BODY)),
-    });
-    try {
-      const refresh = refreshHarness(h.provider, {
-        stored: storedModels("http://127.0.0.1:8317"),
-        allowNetwork: false,
-      });
-      await h.provider.refreshModels?.(refresh.context);
-      expect(refresh.models().map((model) => model.id)).toEqual(["claude-sonnet-4-6", "gpt-5.4"]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-      h.cleanup();
-    }
   });
 });
 
@@ -529,36 +402,32 @@ describe("refreshModels: failure handling", () => {
       fetchImpl: mockFetch(async () => jsonResponse({ error: "unauthorized" }, 401)),
       onWarning: (message) => warnings.push(message),
     });
-    try {
-      const stored = [
-        {
-          id: "claude-sonnet-4-6",
-          name: "claude-sonnet-4-6 (pengepul)",
-          api: "anthropic-messages" as const,
-          provider: "pengepul",
-          baseUrl: "http://127.0.0.1:8317",
-          reasoning: true,
-          input: ["text"] as ("text" | "image")[],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 200_000,
-          maxTokens: 64_000,
-        },
-      ] satisfies PengepulModelEntry[];
-      const refresh = refreshHarness(h.provider, {
-        credential: { type: "api_key", key: "sk-wrong", baseUrl: "http://10.10.1.100:8317" },
-        stored,
-        allowNetwork: true,
-      });
-      await h.provider.refreshModels?.(refresh.context);
+    const stored = [
+      {
+        id: "claude-sonnet-4-6",
+        name: "claude-sonnet-4-6 (pengepul)",
+        api: "anthropic-messages" as const,
+        provider: "pengepul",
+        baseUrl: "http://127.0.0.1:8317",
+        reasoning: true,
+        input: ["text"] as ("text" | "image")[],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 200_000,
+        maxTokens: 64_000,
+      },
+    ] satisfies PengepulModelEntry[];
+    const refresh = refreshHarness(h.provider, {
+      credential: { type: "api_key", key: "sk-wrong", baseUrl: "http://10.10.1.100:8317" },
+      stored,
+      allowNetwork: true,
+    });
+    await h.provider.refreshModels?.(refresh.context);
 
-      expect(warnings.join("\n")).toContain("401");
-      expect(refresh.models().map((model) => model.id)).toEqual(["claude-sonnet-4-6"]);
-      expect(refresh.publications.some((publication) => publication.persist !== undefined)).toBe(
-        false,
-      );
-    } finally {
-      h.cleanup();
-    }
+    expect(warnings.join("\n")).toContain("401");
+    expect(refresh.models().map((model) => model.id)).toEqual(["claude-sonnet-4-6"]);
+    expect(refresh.publications.some((publication) => publication.persist !== undefined)).toBe(
+      false,
+    );
   });
 
   test("a hung relay is cut off by the timeout instead of stalling the refresh", async () => {
@@ -575,16 +444,12 @@ describe("refreshModels: failure handling", () => {
       ),
       onWarning: (message) => warnings.push(message),
     });
-    try {
-      const refresh = refreshHarness(h.provider, {
-        credential: { type: "api_key", key: "sk-local-abc", baseUrl: "http://10.10.1.100:8317" },
-        allowNetwork: true,
-      });
-      await h.provider.refreshModels?.(refresh.context);
-      expect(warnings.join("\n")).toContain("timed out");
-    } finally {
-      h.cleanup();
-    }
+    const refresh = refreshHarness(h.provider, {
+      credential: { type: "api_key", key: "sk-local-abc", baseUrl: "http://10.10.1.100:8317" },
+      allowNetwork: true,
+    });
+    await h.provider.refreshModels?.(refresh.context);
+    expect(warnings.join("\n")).toContain("timed out");
   });
 
   test("an aborted refresh stops quietly", async () => {
@@ -595,16 +460,12 @@ describe("refreshModels: failure handling", () => {
       fetchImpl: mockFetch(async () => jsonResponse(API_BODY)),
       onWarning: (message) => warnings.push(message),
     });
-    try {
-      const refresh = refreshHarness(h.provider, {
-        credential: { type: "api_key", key: "sk-local-abc", baseUrl: "http://10.10.1.100:8317" },
-        allowNetwork: true,
-        signal: controller.signal,
-      });
-      await h.provider.refreshModels?.(refresh.context);
-      expect(warnings).toEqual([]);
-    } finally {
-      h.cleanup();
-    }
+    const refresh = refreshHarness(h.provider, {
+      credential: { type: "api_key", key: "sk-local-abc", baseUrl: "http://10.10.1.100:8317" },
+      allowNetwork: true,
+      signal: controller.signal,
+    });
+    await h.provider.refreshModels?.(refresh.context);
+    expect(warnings).toEqual([]);
   });
 });

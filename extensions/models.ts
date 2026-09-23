@@ -2,10 +2,11 @@
  * pengepul model discovery.
  *
  * Fetches the relay's model catalog (`GET /v1/models`) and maps it into the
- * pi-ai `ProviderModelConfig` shape, mirroring the commandcode provider's
- * cached-catalog design: a fresh fetch wins, a valid cache covers a briefly
- * absent relay, and an empty result leaves pengepul models unavailable until
- * the next successful startup refresh.
+ * pi-ai `ProviderModelConfig` shape. Discovery is pi's to drive: the catalog
+ * lives in pi's model store between runs, so a briefly absent relay is covered
+ * by the store the provider registered rather than by a file this module owns.
+ * An empty result leaves pengepul models unavailable until the next successful
+ * startup refresh.
  *
  * The relay advertises id/owned_by and, since pengepul 0.6.0, optional
  * per-model metadata: `context_window`, `max_output_tokens`,
@@ -17,10 +18,9 @@
  * next best source - and then family heuristics. The catalog lookup is
  * injected, so this module imports nothing from pi-ai and tests pin it.
  *
- * The network/cache are injected so the catalog logic stays testable.
+ * The catalog fetch is injected as well, so this module holds no hidden
+ * network access and tests pin the transport.
  */
-
-import { readFile } from "node:fs/promises"
 
 import { MODELS_TIMEOUT_MS_ENV } from "./config.ts"
 import { baseUrlForDialect, dialectForModelId } from "./dialect.ts"
@@ -32,8 +32,6 @@ export const DEFAULT_MODELS_TIMEOUT_MS = 10_000
 const DEFAULT_CONTEXT_WINDOW = 200_000
 const DEFAULT_MAX_TOKENS = 64_000
 const ZERO_COST: ModelCostRates = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-/** v5 cached entries predate the relay-uniform off/minimal overlay (foreign catalog maps offered levels the relay 400s); reject it. */
-const MODEL_CACHE_VERSION = 6
 
 export type ModelInput = ("text" | "image")[]
 
@@ -491,10 +489,10 @@ function isBatchRoute(id: string): boolean {
 }
 
 /**
- * Drop the ids this relay cannot serve on either wire. Applied on the way in
- * from the relay and on the way in from the cache: the cache is what covers a
- * briefly absent relay, so it must not be the path that resurrects a route
- * the live catalog would have dropped.
+ * Drop the ids this relay cannot serve on either wire, on the way in from the
+ * relay. The store replays what pi persisted, so a route this filter drops
+ * survives in a store written before the filter existed only until the next
+ * successful fetch replaces it.
  */
 function servableModels(models: readonly PengepulModel[]): PengepulModel[] {
   return models.filter((model) => !isBatchRoute(model.id))
@@ -692,11 +690,6 @@ interface FetchModelsOptions {
   lookupBuiltin?: BuiltinModelLookup
 }
 
-interface LoadModelsOptions extends FetchModelsOptions {
-  cachePath: string
-  relayBase: string
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -816,95 +809,3 @@ export async function fetchPengepulModels(
 
   return modelsFromApiResponse(body, options.lookupBuiltin)
 }
-
-function numberField(record: Record<string, unknown>, key: string): number {
-  const value = record[key]
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error(`Expected ${key} to be a finite number`)
-  }
-  return value
-}
-
-function inputField(record: Record<string, unknown>, key: string): ModelInput {
-  const value = record[key]
-  if (!Array.isArray(value)) throw new Error(`Expected ${key} to be an array`)
-  return value.map((entry) => {
-    if (entry !== "text" && entry !== "image") {
-      throw new Error(`Expected ${key} entries to be "text" or "image"`)
-    }
-    return entry
-  })
-}
-
-function costField(record: Record<string, unknown>, key: string): ModelCostRates {
-  const value = record[key]
-  if (!isRecord(value)) throw new Error(`Expected ${key} to be an object`)
-  return {
-    input: numberField(value, "input"),
-    output: numberField(value, "output"),
-    cacheRead: numberField(value, "cacheRead"),
-    cacheWrite: numberField(value, "cacheWrite"),
-  }
-}
-
-function levelMapField(
-  record: Record<string, unknown>,
-  key: string,
-): Record<string, string | null> {
-  const value = record[key]
-  if (!isRecord(value)) throw new Error(`Expected ${key} to be an object`)
-  const map: Record<string, string | null> = {}
-  for (const [level, mapped] of Object.entries(value)) {
-    if (mapped !== null && typeof mapped !== "string") {
-      throw new Error(`Expected ${key} values to be strings or null`)
-    }
-    map[level] = mapped
-  }
-  return map
-}
-
-export function modelsFromCache(value: unknown): readonly PengepulModel[] {
-  if (!isRecord(value)) throw new Error("Expected model cache to be an object")
-  if (value["version"] !== MODEL_CACHE_VERSION) {
-    throw new Error(`Expected model cache version ${MODEL_CACHE_VERSION}`)
-  }
-  if (!Array.isArray(value["models"])) throw new Error("Expected cached models to be an array")
-
-  const parsed: PengepulModel[] = value["models"].map((entry) => {
-    if (!isRecord(entry)) throw new Error("Expected cached model entry to be an object")
-    return {
-      id: stringField(entry, "id"),
-      name: stringField(entry, "name"),
-      dialect: stringField(entry, "dialect") as PengepulDialect,
-      reasoning: entry["reasoning"] === true,
-      input: inputField(entry, "input"),
-      cost: costField(entry, "cost"),
-      contextWindow: numberField(entry, "contextWindow"),
-      maxTokens: numberField(entry, "maxTokens"),
-      ...(entry["thinkingLevelMap"] !== undefined
-        ? { thinkingLevelMap: levelMapField(entry, "thinkingLevelMap") }
-        : {}),
-    }
-  })
-  const servable = servableModels(parsed)
-  if (servable.length === 0) throw new Error("pengepul cache holds no valid models")
-  return servable
-}
-
-async function readCache(cachePath: string): Promise<readonly PengepulModel[]> {
-  const contents = await readFile(cachePath, "utf-8")
-  return modelsFromCache(JSON.parse(contents))
-}
-
-/** Reads the cached catalog without touching the network; empty when missing/invalid. */
-export async function loadCachedPengepulModels(
-  cachePath: string,
-): Promise<readonly PengepulModel[]> {
-  try {
-    return await readCache(cachePath)
-  } catch {
-    return []
-  }
-}
-
-

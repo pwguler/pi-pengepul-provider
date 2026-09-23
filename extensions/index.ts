@@ -4,35 +4,17 @@
  * Registers pengepul as a pi provider. pengepul is a relay that pools your
  * Claude/Codex subscriptions and speaks both native wires. The provider itself
  * lives in `./provider.ts`: pi resolves auth through it and hands the credential
- * back on every refresh, so `auth.json` carries the key and the relay base. The
- * pure core is `./credential.ts`, `./dialect.ts`, and `./models.ts`; this file
- * adapts them to the pi ExtensionAPI seam and reads the one file pi cannot.
+ * back on every refresh, so `auth.json` carries the key and the relay base, and
+ * the `PENGEPUL_*` environment variables override both. The pure core is
+ * `./credential.ts`, `./dialect.ts`, and `./models.ts`; this file adapts them to
+ * the pi ExtensionAPI seam and reads nothing of its own.
  */
 
-import {
-  getAgentDir,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent"
+import { type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { getBuiltinModel, getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all"
-import { readFileSync } from "node:fs"
 
-import { resolveSettings } from "./config.ts"
 import { catalogIdForms, type PengepulModel } from "./models.ts"
 import { createPengepulProvider } from "./provider.ts"
-
-function expandHome(path: string): string {
-  if (path === "~") return process.env.HOME ?? path
-  if (path.startsWith("~/")) return `${process.env.HOME ?? ""}${path.slice(1)}`
-  return path
-}
-
-function readConfigText(path: string): string | undefined {
-  try {
-    return readFileSync(expandHome(path), "utf-8")
-  } catch {
-    return undefined
-  }
-}
 
 /** The metadata fields the lookup extracts from a pi catalog entry. */
 function metaFromModel(model: NonNullable<ReturnType<typeof getBuiltinModel>>) {
@@ -88,17 +70,13 @@ function createBuiltinLookup(): (id: string, dialect: string) => ReturnType<type
 
 /**
  * Model discovery belongs to pi: it calls `refreshModels` with the resolved
- * credential, first against pi's cached catalog and then, when the network is
+ * credential, first against pi's model store and then, when the network is
  * allowed, against the relay. Registration is synchronous; nothing here waits
  * on the relay, and the catalog survives a restart through pi's model store.
  */
 export default function (pi: ExtensionAPI) {
-  const settings = resolveSettings(process.env, getAgentDir())
-
   const provider = createPengepulProvider({
     env: process.env,
-    configText: readConfigText(settings.configPath),
-    legacyCachePath: settings.legacyCachePath,
     lookupBuiltin: createBuiltinLookup(),
   })
 
