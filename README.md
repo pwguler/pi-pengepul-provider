@@ -141,6 +141,11 @@ box:
 }
 ```
 
+`env` is read off the credential by this provider, not by pi core: a provider
+that brings its own `resolve()` has to hand the values back, and pengepul does.
+Re-add them after `/login pengepul` — pi replaces the whole credential on login,
+so a key rotation drops the block and, with it, the tier.
+
 Idle warming covers gaps up to 30 minutes, pi's own safety limit, and pi only
 triggers it when the expected saving clears a threshold of its own — a small
 prompt is left to expire rather than refreshed. The long tier is what carries a

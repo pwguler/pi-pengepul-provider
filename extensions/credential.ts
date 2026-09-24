@@ -20,6 +20,8 @@ export interface PengepulCredential {
   type?: unknown
   key?: unknown
   baseUrl?: unknown
+  /** Provider-scoped environment values pi stores alongside the key. */
+  env?: unknown
 }
 
 function nonEmptyString(value: unknown): string | undefined {
@@ -36,6 +38,32 @@ export function credentialRelayBase(credential: PengepulCredential | undefined):
 /** The API key stored on the credential, when the user set one. */
 export function credentialApiKey(credential: PengepulCredential | undefined): string | undefined {
   return nonEmptyString(credential?.key)
+}
+
+/**
+ * The provider-scoped environment the credential carries, when it holds any.
+ *
+ * pi core fills an `AuthResult.env` from here only for providers that bring no
+ * `resolve()` of their own; this provider brings one, so the values have to be
+ * passed through or they never reach a request. They are how a user sets
+ * `PI_CACHE_RETENTION=long` for the relay without exporting it in every shell
+ * that starts pi, and losing them is silent: the cache quietly falls back to
+ * the five-minute tier and re-bills whole prefixes.
+ *
+ * Non-string values are dropped rather than stringified — an env var is a
+ * string, and a nested object here is a typo, not a value.
+ */
+export function credentialEnv(
+  credential: PengepulCredential | undefined,
+): Record<string, string> | undefined {
+  const raw = credential?.env
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined
+
+  const env: Record<string, string> = {}
+  for (const [name, value] of Object.entries(raw)) {
+    if (typeof value === "string") env[name] = value
+  }
+  return Object.keys(env).length > 0 ? env : undefined
 }
 
 export interface RelayBaseSources {

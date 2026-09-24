@@ -30,6 +30,7 @@ import { anthropicMessagesApi, lazyStream, openAICompletionsApi } from "@earendi
 import { API_KEY_ENV, RELAY_BASE_ENV } from "./config.ts"
 import {
   credentialApiKey,
+  credentialEnv,
   credentialRelayBase,
   resolveApiKey,
   resolveRelayBase,
@@ -211,9 +212,21 @@ export function createPengepulProvider(options: PengepulProviderOptions): Provid
         resolve: async (input): Promise<AuthResult | undefined> => {
           const resolved = resolveKey(input.credential)
           if (!resolved) return undefined
+          const env = credentialEnv(input.credential as PengepulCredential | undefined)
           // No `baseUrl` here on purpose: pi would apply it to every model and
           // collapse the two dialect base URLs into one.
-          return { auth: { apiKey: resolved.key }, source: resolved.source }
+          //
+          // `env` is here because pi only reads it off the credential itself
+          // when the provider brings no `resolve()` of its own — this one does,
+          // so a value like PI_CACHE_RETENTION=long is dropped unless it is
+          // handed back. Dropping it is silent and costs money: the cache falls
+          // back to the five-minute tier and re-bills the prefix on every
+          // return.
+          return {
+            auth: { apiKey: resolved.key },
+            ...(env ? { env } : {}),
+            source: resolved.source,
+          }
         },
       },
     },

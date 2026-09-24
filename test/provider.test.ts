@@ -193,6 +193,36 @@ describe("pengepul auth resolution", () => {
     expect(resolved?.source).toBe("PENGEPUL_API_KEY");
   });
 
+  test("hands the credential's provider environment to the request", async () => {
+    // pi only fills `AuthResult.env` from the credential for providers that
+    // bring no `resolve()`; this one does, so the values have to be returned
+    // or PI_CACHE_RETENTION=long in auth.json never reaches the cache tier
+    // decision, silently demoting every session to five-minute entries.
+    const h = harness();
+    const resolved = await h.provider.auth.apiKey?.resolve({
+      ctx: authContext(),
+      credential: {
+        type: "api_key",
+        key: "sk-local-abc",
+        // The cast is the hand-edited-file boundary: pi types `env` as
+        // string-to-string, and a file on disk can hold anything.
+        env: { PI_CACHE_RETENTION: "long", IGNORED: 7 } as unknown as Record<string, string>,
+      },
+      signal: new AbortController().signal,
+    });
+    expect(resolved?.env).toEqual({ PI_CACHE_RETENTION: "long" });
+  });
+
+  test("resolves without an env when the credential carries none", async () => {
+    const h = harness();
+    const resolved = await h.provider.auth.apiKey?.resolve({
+      ctx: authContext(),
+      credential: { type: "api_key", key: "sk-local-abc" },
+      signal: new AbortController().signal,
+    });
+    expect(resolved?.env).toBeUndefined();
+  });
+
   test("reports unconfigured when no key exists anywhere", async () => {
     const h = harness();
     const resolved = await h.provider.auth.apiKey?.resolve({

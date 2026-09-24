@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   credentialApiKey,
+  credentialEnv,
   credentialRelayBase,
   resolveApiKey,
   resolveRelayBase,
@@ -30,6 +31,29 @@ describe("credentialApiKey", () => {
     expect(credentialApiKey({ key: "" })).toBeUndefined();
     expect(credentialApiKey({ key: 42 })).toBeUndefined();
     expect(credentialApiKey(undefined)).toBeUndefined();
+  });
+});
+
+describe("credentialEnv", () => {
+  test("reads the provider-scoped environment off the credential", () => {
+    expect(
+      credentialEnv({ type: "api_key", env: { PI_CACHE_RETENTION: "long" } }),
+    ).toEqual({ PI_CACHE_RETENTION: "long" });
+  });
+
+  test("drops non-string values instead of stringifying them", () => {
+    expect(credentialEnv({ env: { KEEP: "1", OFF: 2, NIL: null, NESTED: { a: "b" } } })).toEqual({
+      KEEP: "1",
+    });
+  });
+
+  test("reports nothing for a missing, empty, or non-object env", () => {
+    expect(credentialEnv({ type: "api_key", key: "sk-local-abc" })).toBeUndefined();
+    expect(credentialEnv({ env: {} })).toBeUndefined();
+    expect(credentialEnv({ env: { DROPPED: 1 } })).toBeUndefined();
+    expect(credentialEnv({ env: "PI_CACHE_RETENTION=long" })).toBeUndefined();
+    expect(credentialEnv({ env: ["a"] })).toBeUndefined();
+    expect(credentialEnv(undefined)).toBeUndefined();
   });
 });
 
