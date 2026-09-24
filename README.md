@@ -58,6 +58,10 @@ prefixed `pengepul/<id>`. To try it without installing, use
   relay already serves — takes them from the same family's previous minor, so
   it does not sit at `high` until the next pi catalog update. Nothing to
   configure: `thinkingLevelMap` is resolved per id here.
+- Publishes Anthropic's cache lifetimes (5 minutes, 1 hour) on the Messages
+  wire, so pi's cache warmer can keep a Claude conversation's entry alive
+  instead of re-billing its whole prefix after five idle minutes. See
+  [Prompt cache](#prompt-cache).
 - Caches the catalog in pi's model store, so startup does not wait on the
   network and a briefly absent relay is covered. The cached models are
   re-pointed at the relay base configured now, so moving the relay does not
@@ -106,6 +110,47 @@ Do not set `providers.pengepul.baseUrl` in `models.json`. pi applies that value
 to every model of the provider, which collapses the two wires onto one URL —
 Anthropic Messages traffic would be sent to `/v1` and Chat Completions traffic
 to `/`.
+
+## Prompt cache
+
+The upstream prompt cache is one entry per account and lives five minutes by
+default, so a conversation that waits longer than that pays for its whole prefix
+again — on a 700k-token Opus session, dollars per return, logged by the relay as
+a `cache_write` with a near-zero `cache_read`.
+
+This provider declares Anthropic's lifetimes (5 minutes, 1 hour) on every
+Messages-wire model, which is what lets pi keep an entry alive at all: pi
+refreshes an entry by re-sending the prompt with a one-token cap before it
+expires, and it only warms a model whose lifetime it can resolve. Two pi
+settings decide when that happens, and neither covers an idle gap out of the
+box:
+
+| Setting | Where | Effect |
+|---|---|---|
+| `cacheWarming: "idle"` | `~/.pi/agent/settings.json` | Warms between agent runs. The default, `"streaming"`, stops as soon as a run settles — exactly when a five-minute entry is about to expire. |
+| `env: { "PI_CACHE_RETENTION": "long" }` | the `pengepul` credential in `auth.json` | Asks for the 1-hour tier instead of the 5-minute one. The relay forwards the extended TTL to Anthropic. |
+
+```json
+{
+  "pengepul": {
+    "type": "api_key",
+    "key": "sk-local-...",
+    "baseUrl": "http://127.0.0.1:8317",
+    "env": { "PI_CACHE_RETENTION": "long" }
+  }
+}
+```
+
+Idle warming covers gaps up to 30 minutes, pi's own safety limit, and pi only
+triggers it when the expected saving clears a threshold of its own — a small
+prompt is left to expire rather than refreshed. The long tier is what carries a
+longer break. Both are cheap next to a miss: a refresh is one cache read plus a
+one-token completion, while the long tier only raises the write premium, on the
+few hundred tokens a turn actually adds.
+
+`/session` reports the mode, the refresh cost, and the miss penalty it is
+weighing, and `showCacheMissNotices` in `settings.json` prints each miss with
+its re-billed token count.
 
 ## Upgrading from 0.4.0 or earlier
 

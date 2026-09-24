@@ -838,6 +838,27 @@ describe("toPengepulModels", () => {
     ]);
   });
 
+  test("Anthropic models declare the lifetimes the cache warmer schedules against", () => {
+    // pi only warms a cache entry whose lifetime the model resolves
+    // (`cache-warmer.js` `getPromptCacheTtlMs` reads `model.promptCache[tier]`),
+    // and no pi catalog answers for a relay id. Without these, a session idle
+    // past the five-minute default tier re-bills its whole prefix at the write
+    // rate, on every return.
+    const models = modelsFromApiResponse(API_BODY);
+    const entries = toPengepulModels(models, "http://127.0.0.1:8317");
+    const claude = onWire(entries, "claude-sonnet-4-6", "anthropic-messages");
+    const opus = onWire(entries, "claude-opus-5", "anthropic-messages");
+    const gpt = onWire(entries, "gpt-5.4", "openai-completions");
+
+    // Anthropic's own TTLs; the relay forwards the extended one.
+    expect(claude?.promptCache).toEqual({ short: 300, long: 3600 });
+    // Chat Completions serves aggregated upstreams whose lifetimes this
+    // provider has not measured, and pi does not warm an unknown lifetime.
+    expect(gpt?.promptCache).toBeUndefined();
+    // Per model, so one model's tiers cannot be rewritten through another's.
+    expect(claude?.promptCache).not.toBe(opus?.promptCache);
+  });
+
   test("picker label strips the relay prefix; the id stays exact", () => {
     // The fixture needs a prefixed id: every id in API_BODY is bare, so this
     // test passed for a year with the prefix-stripping removed entirely.

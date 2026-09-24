@@ -522,8 +522,22 @@ export function modelsFromApiResponse(
 
 import type { Api, Model } from "@earendil-works/pi-ai"
 
+/**
+ * Prompt cache lifetime in seconds for each retention tier a request can ask
+ * for, the shape pi reads off a model to decide when to refresh its cache
+ * entry. Declared here because pi-ai 0.85.1's `Model` has no `promptCache`;
+ * a host that predates the field ignores it.
+ */
+export interface PromptCacheTiers {
+  short: number
+  long: number
+}
+
 /** The pi-ai model shapes this provider serves: one per dialect the relay speaks. */
-export type PengepulModelEntry = Model<"anthropic-messages"> | Model<"openai-completions">
+export type PengepulModelEntry = (
+  | Model<"anthropic-messages">
+  | Model<"openai-completions">
+) & { promptCache?: PromptCacheTiers }
 
 /** The provider id every pengepul model is stamped with. */
 export const PENGEPUL_PROVIDER_ID = "pengepul"
@@ -562,18 +576,17 @@ function sharedModelFields(model: PengepulModel, relayBase: string) {
  * openai-completions carries `prompt_cache_key: <sessionId>` (and
  * `prompt_cache_retention: "24h"`) under PI_CACHE_RETENTION=long, so the body
  * field alone would name the conversation; anthropic-messages carries no
- * `prompt_cache_key` at all, and pi-ai hardcodes `x-session-affinity` there,
- * which this relay does not read. Messages traffic therefore rests entirely on
- * the relay's prefix fallback until a pi release honours
- * `sessionAffinityFormat` on that dialect.
+ * `prompt_cache_key` at all, and pi-ai hardcodes `x-session-affinity` there up
+ * to 0.85.1, which this relay does not read. Messages traffic therefore rests
+ * on the relay's prefix fallback until 0.87, where `sessionAffinityFormat`
+ * starts being read on that dialect too and the same `openrouter` value lands
+ * as `x-session-id`.
  *
- * The two dialects do not land at the same time. openai-completions honors
- * `sessionAffinityFormat` in every released pi. anthropic-messages only reads it
- * from the unreleased change on pi main (commit bbb61e34a), which is why the
- * field is re-declared below rather than taken from `AnthropicMessagesCompat`:
- * against pi-ai 0.85.1 the pin is inert, and the cost of an ignored header is
- * zero. Pin now rather than later — the cost of forgetting is silently
- * re-billed Claude prefixes.
+ * The field is re-declared below rather than taken from
+ * `AnthropicMessagesCompat` so the pin does not depend on the host's pi-ai
+ * version: 0.85.1 ignores a value it never types, and the cost of an ignored
+ * header is zero. Pin now rather than later — the cost of forgetting is
+ * silently re-billed Claude prefixes.
  */
 function affinityPin() {
   return {
@@ -581,6 +594,32 @@ function affinityPin() {
     sessionAffinityFormat: "openrouter" as const,
   }
 }
+
+/**
+ * Anthropic's prompt cache lifetimes: five minutes by default, one hour when
+ * the request asks for the extended TTL. Copied per model rather than shared,
+ * so nothing downstream can mutate one model's lifetimes into another's.
+ *
+ * pi reads `model.promptCache[tier]` to know when the entry a request wrote
+ * expires, and skips warming a model whose lifetime it cannot resolve
+ * (`cache-warmer.js` `getPromptCacheTtlMs`). No pi catalog answers for a relay
+ * id, so a Claude model served here would otherwise never be warmed: any idle
+ * past the TTL — five minutes on the default tier — re-bills the whole prefix
+ * at the write rate, which for a 700k-token Opus conversation is dollars per
+ * miss.
+ *
+ * Only the Messages wire gets them. Those ids are the ones the relay forwards
+ * to Anthropic's own API, whose lifetimes these are; the Chat Completions wire
+ * serves aggregated vendors (commandcode, openrouter) through upstreams whose
+ * cache lifetimes this provider has no measurement for, and pi does not warm a
+ * lifetime it cannot resolve.
+ *
+ * Measured, not assumed: a `cache_control` ttl of `1h` on this wire comes back
+ * with the whole prefix in `usage.cache_creation.ephemeral_1h_input_tokens`,
+ * so the relay passes the extended TTL through and `PI_CACHE_RETENTION=long`
+ * buys the hour declared here.
+ */
+const ANTHROPIC_PROMPT_CACHE: PromptCacheTiers = { short: 300, long: 3600 }
 
 /**
  * Anthropic compat as pi-ai 0.85.1 types it, plus the affinity format a later
@@ -633,6 +672,10 @@ export function toPengepulModels(
         // The 1h cache TTL is a Messages-dialect feature too: `cache_control.ttl`
         // has nowhere to go on the Chat Completions wire. Reasoning is not part
         // of it — a non-reasoning Claude model caches the same way.
+        //
+        // The lifetimes pi's cache warmer schedules its refreshes against, on
+        // this wire only, for the reason just given.
+        promptCache: { ...ANTHROPIC_PROMPT_CACHE },
         compat: {
           ...affinityPin(),
           ...(adaptive ? { forceAdaptiveThinking: true as const } : {}),
