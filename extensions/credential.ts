@@ -10,7 +10,7 @@
  * override, then the credential, then the loopback default pengepul binds to.
  */
 
-import { API_KEY_ENV } from "./config.ts"
+import { API_KEY_ENV, RELAY_BASE_ENV } from "./config.ts"
 import { normalizeRootBaseUrl } from "./dialect.ts"
 import { DEFAULT_RELAY_BASE } from "./models.ts"
 
@@ -30,9 +30,18 @@ function nonEmptyString(value: unknown): string | undefined {
   return trimmed === "" ? undefined : trimmed
 }
 
-/** The relay base stored on the credential, when the user set one. */
+/**
+ * The relay base stored on the credential, when the user set one.
+ *
+ * `baseUrl` is where the stored credential keeps it. The credential pi hands
+ * the network phase of a refresh is not the stored one: pi rebuilds it from
+ * `resolve()` as `{ type, key, env }`, so the base only survives as the
+ * `PENGEPUL_BASE_URL` entry `resolve()` writes into `env`. Missing that
+ * fallback sends the catalog fetch to loopback - which on any machine but the
+ * relay's is some other listener, or nothing.
+ */
 export function credentialRelayBase(credential: PengepulCredential | undefined): string | undefined {
-  return nonEmptyString(credential?.baseUrl)
+  return nonEmptyString(credential?.baseUrl) ?? credentialEnv(credential)?.[RELAY_BASE_ENV]
 }
 
 /** The API key stored on the credential, when the user set one. */

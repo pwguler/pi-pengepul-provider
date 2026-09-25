@@ -15,6 +15,19 @@ describe("credentialRelayBase", () => {
     );
   });
 
+  test("falls back to the env entry pi's rebuilt credential carries", () => {
+    expect(
+      credentialRelayBase({ type: "api_key", env: { PENGEPUL_BASE_URL: "http://10.10.1.100:8317" } }),
+    ).toBe("http://10.10.1.100:8317");
+    expect(
+      credentialRelayBase({
+        type: "api_key",
+        baseUrl: "http://stored:8317",
+        env: { PENGEPUL_BASE_URL: "http://env-entry:8317" },
+      }),
+    ).toBe("http://stored:8317");
+  });
+
   test("trims, and ignores blank or non-string values", () => {
     expect(credentialRelayBase({ baseUrl: "  http://relay:9000  " })).toBe("http://relay:9000");
     expect(credentialRelayBase({ baseUrl: "   " })).toBeUndefined();

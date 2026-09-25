@@ -8,6 +8,7 @@ import type {
   ProviderAuthInteraction,
   RefreshModelsContext,
 } from "@earendil-works/pi-ai";
+import { createModels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 
 import {
   createPengepulProvider,
@@ -320,6 +321,37 @@ describe("refreshModels: catalog fetch", () => {
 
     expect(requested).toEqual([{ url: "http://env:8317/v1/models", apiKey: "sk-env" }]);
     expect(override.models()[0]?.baseUrl).toBe("http://env:8317");
+  });
+
+  test("reaches the credential's relay base through pi's own refresh", async () => {
+    // pi hands the network phase a credential it rebuilds from `resolve()` -
+    // `{ type, key, env }` - not the stored one, so `baseUrl` does not reach
+    // it. Driving the real runtime is the only way to see that.
+    const requested: Array<{ url: string; apiKey: string | undefined }> = [];
+    const provider = createPengepulProvider({
+      env: {},
+      logWarning: () => {},
+      fetchImpl: mockFetch(async (url, init) => {
+        requested.push({ url, apiKey: new Headers(init?.headers).get("x-api-key") ?? undefined });
+        return jsonResponse(API_BODY);
+      }),
+    });
+    const credentials = new InMemoryCredentialStore();
+    await credentials.modify("pengepul", async () => ({
+      type: "api_key",
+      key: "sk-cred",
+      baseUrl: "http://10.10.1.100:8317",
+    }) as PengepulApiKeyCredential);
+    const models = createModels({ credentials, authContext: authContext() });
+    models.setProvider(provider);
+
+    const result = await models.refresh({ providers: ["pengepul"] });
+
+    expect(result.errors.size).toBe(0);
+    expect(requested).toEqual([
+      { url: "http://10.10.1.100:8317/v1/models", apiKey: "sk-cred" },
+    ]);
+    expect(provider.getModels()[0]?.baseUrl).toBe("http://10.10.1.100:8317");
   });
 
   test("takes the credential's base and key when no override is set", async () => {

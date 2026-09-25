@@ -212,11 +212,20 @@ export function createPengepulProvider(options: PengepulProviderOptions): Provid
         resolve: async (input): Promise<AuthResult | undefined> => {
           const resolved = resolveKey(input.credential)
           if (!resolved) return undefined
-          const env = credentialEnv(input.credential as PengepulCredential | undefined)
+          const credential = input.credential as PengepulCredential | undefined
+          const relayBase = credentialRelayBase(credential)
+          const credentialVars = credentialEnv(credential)
+          const env =
+            credentialVars || relayBase
+              ? { ...credentialVars, ...(relayBase ? { [RELAY_BASE_ENV]: relayBase } : {}) }
+              : undefined
           // No `baseUrl` here on purpose: pi would apply it to every model and
-          // collapse the two dialect base URLs into one.
+          // collapse the two dialect base URLs into one. The relay base rides
+          // in `env` instead, because the network phase of a refresh gets a
+          // credential pi rebuilds from this result, and `env` is the only
+          // field of ours that survives the rebuild.
           //
-          // `env` is here because pi only reads it off the credential itself
+          // The credential's own `env` is here because pi only reads it off the credential itself
           // when the provider brings no `resolve()` of its own — this one does,
           // so a value like PI_CACHE_RETENTION=long is dropped unless it is
           // handed back. Dropping it is silent and costs money: the cache falls
